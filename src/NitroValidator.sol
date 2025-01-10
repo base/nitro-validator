@@ -4,12 +4,9 @@ pragma solidity ^0.8.15;
 import {ICertManager} from "./ICertManager.sol";
 import {Sha2Ext} from "./Sha2Ext.sol";
 import {CborDecode, CborElement, LibCborElement} from "./CborDecode.sol";
-import {Asn1Decode} from "./Asn1Decode.sol";
 import {ECDSA384} from "@solarity/libs/crypto/ECDSA384.sol";
 import {ECDSA384Curve} from "./ECDSA384Curve.sol";
 import {LibBytes} from "./LibBytes.sol";
-
-import {console} from "forge-std/console.sol";
 
 // adapted from https://github.com/marlinprotocol/NitroProver/blob/f1d368d1f172ad3a55cd2aaaa98ad6a6e7dcde9d/src/NitroProver.sol
 
