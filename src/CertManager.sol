@@ -28,17 +28,17 @@ contract CertManager is ICertManager {
     // which essentially means the signature algorithm is Elliptic curve Digital Signature Algorithm (DSA) coupled with the Secure Hash Algorithm 384 (SHA384) algorithm
     // @dev Sig algo is hardcoded here because the root cerificate's sig algorithm is known beforehand
     // @dev reference article for encoding https://learn.microsoft.com/en-in/windows/win32/seccertenroll/about-object-identifier
-    bytes32 public constant CERT_ALGO_OID = keccak256(hex"06082a8648ce3d040303");
+    bytes32 public constant CERT_ALGO_OID = 0x53ce037f0dfaa43ef13b095f04e68a6b5e3f1519a01a3203a1e6440ba915b87e; // keccak256(hex"06082a8648ce3d040303")
     // https://oid-rep.orange-labs.fr/get/1.2.840.10045.2.1
     // 1.2.840.10045.2.1 {iso(1) member-body(2) us(840) ansi-x962(10045) keyType(2) ecPublicKey(1)} represents Elliptic curve public key cryptography
-    bytes32 public constant EC_PUB_KEY_OID = keccak256(hex"2a8648ce3d0201");
+    bytes32 public constant EC_PUB_KEY_OID = 0xb60fee1fd85f867dd7c8d16884a49a20287ebe4c0fb49294e9825988aa8e42b4; // keccak256(hex"2a8648ce3d0201")
     // https://oid-rep.orange-labs.fr/get/1.3.132.0.34
     // 1.3.132.0.34 {iso(1) identified-organization(3) certicom(132) curve(0) ansip384r1(34)} represents NIST 384-bit elliptic curve
-    bytes32 public constant SECP_384_R1_OID = keccak256(hex"2b81040022");
+    bytes32 public constant SECP_384_R1_OID = 0xbd74344bb507daeb9ed315bc535f24a236ccab72c5cd6945fb0efe5c037e2097; // keccak256(hex"2b81040022")
 
     // extension OID certificate constants
-    bytes32 public constant BASIC_CONSTRAINTS_OID = keccak256(hex"551d13");
-    bytes32 public constant KEY_USAGE_OID = keccak256(hex"551d0f");
+    bytes32 public constant BASIC_CONSTRAINTS_OID = 0x6351d72a43cb42fb9a2531a28608c278c89629f8f025b5f5dc705f3fe45e950a; // keccak256(hex"551d13")
+    bytes32 public constant KEY_USAGE_OID = 0x45529d8772b07ebd6d507a1680da791f4a2192882bf89d518801579f7a5167d2; // keccak256(hex"551d0f")
 
     // certHash -> VerifiedCert
     mapping(bytes32 => bytes) public verified;
