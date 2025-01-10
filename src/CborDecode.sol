@@ -38,7 +38,8 @@ library LibCborElement {
 
     // Returns true if the element is null
     function isNull(CborElement self) internal pure returns (bool) {
-        return cborType(self) == 0xF6;
+        uint8 _type = cborType(self);
+        return _type == 0xf6 || _type == 0xf7; // null or undefined
     }
 
     // Pack 3 uint80s into a uint256
@@ -101,11 +102,15 @@ library CborDecode {
         uint8 _type = uint8(cbor[ix] & 0xe0);
         uint8 ai = uint8(cbor[ix] & 0x1f);
         if (_type == 0xe0) {
-            require(!required || ai != 22, "null value for required element");
-            // primitive type, retain the additional information
+            // The primitive type can encode a float, bool, null, undefined, etc.
+            // We only need support for null (and we treat undefined as null).
+            require(ai == 22 || ai == 23, "only null primitive values are supported");
+            require(!required, "null value for required element");
+            // retain the additional information:
             return LibCborElement.toCborElement(_type | ai, ix + 1, 0);
         }
         require(_type == expectedType, "unexpected type");
+        require(ai < 28, "unsupported type");
         if (ai == 24) {
             return LibCborElement.toCborElement(_type, ix + 2, uint8(cbor[ix + 1]));
         } else if (ai == 25) {
