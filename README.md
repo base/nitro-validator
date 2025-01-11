@@ -7,6 +7,9 @@ Note it costs around 63m gas to validate an attestation with no prior verified c
 You can break this up into smaller transactions by verifying each cert in the chain separately.
 You can call `CertManager.verifyCert` for each cert in the attestation `cabundle`.
 
+This library does not currently support certificate revocation, which is disabled in AWS's attestation verification documentation
+[here](https://github.com/aws/aws-nitro-enclaves-nsm-api/blob/4b851f3006c6fa98f23dcffb2cba03b39de9b8af/docs/attestation_process.md#32-syntactical-validation).
+
 ## Usage
 
 1. Deploy the `CertManager` separately.

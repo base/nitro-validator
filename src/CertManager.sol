@@ -10,6 +10,9 @@ import {ICertManager} from "./ICertManager.sol";
 
 // adapted from https://github.com/marlinprotocol/NitroProver/blob/f1d368d1f172ad3a55cd2aaaa98ad6a6e7dcde9d/src/CertManager.sol
 
+// Manages a mapping of verified certificates and their metadata.
+// The root of trust is the AWS Nitro root cert.
+// Certificate revocation is not currently supported.
 contract CertManager is ICertManager {
     using Asn1Decode for bytes;
     using LibAsn1Ptr for Asn1Ptr;
