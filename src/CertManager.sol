@@ -15,6 +15,8 @@ contract CertManager is ICertManager {
     using LibAsn1Ptr for Asn1Ptr;
     using LibBytes for bytes;
 
+    event CertVerified(bytes32 indexed certHash);
+
     // root CA certificate constants (don't store it to reduce contract size)
     bytes32 public constant ROOT_CA_CERT_HASH = 0x311d96fcd5c5e0ccf72ef548e2ea7d4c0cd53ad7c4cc49e67471aed41d61f185;
     uint64 public constant ROOT_CA_CERT_NOT_AFTER = 2519044085;
@@ -109,6 +111,8 @@ contract CertManager is ICertManager {
         cert =
             VerifiedCert({ca: ca, notAfter: notAfter, maxPathLen: maxPathLen, subjectHash: subjectHash, pubKey: pubKey});
         _saveVerified(certHash, cert);
+
+        emit CertVerified(certHash);
 
         return cert;
     }
