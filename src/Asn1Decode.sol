@@ -178,10 +178,20 @@ library Asn1Decode {
      * @return UNIX timestamp (seconds since 1970/01/01)
      */
     function timestampAt(bytes memory der, Asn1Ptr ptr) internal pure returns (uint256) {
-        uint16 _years;
+        uint8 _type = uint8(der[ptr.header()]);
         uint256 offset = ptr.content();
         uint256 length = ptr.length();
 
+        // content validation:
+        require((_type == 0x17 && length == 13) || (_type == 0x18 && length == 15), "Invalid TIMESTAMP");
+        require(der[offset + length - 1] == 0x5A, "TIMESTAMP must be UTC"); // 0x5A == 'Z'
+        for (uint256 i = 0; i < length - 1; i++) {
+            // all other characters must be digits between 0 and 9
+            uint8 v = uint8(der[offset + i]);
+            require(48 <= v && v <= 57, "Invalid character in TIMESTAMP");
+        }
+
+        uint16 _years;
         if (length == 13) {
             _years = (uint8(der[offset]) - 48 < 5) ? 2000 : 1900;
         } else {
