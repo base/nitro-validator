@@ -240,6 +240,12 @@ library Asn1Decode {
         uint256 second
     ) private pure returns (uint256) {
         require(year >= 1970);
+        require(1 <= month && month <= 12);
+        require(1 <= day && day <= 31);
+        require(hour <= 23);
+        require(minute <= 59);
+        require(second <= 59);
+
         int256 _year = int256(year);
         int256 _month = int256(month);
         int256 _day = int256(day);
