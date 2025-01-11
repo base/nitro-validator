@@ -98,11 +98,22 @@ contract NitroValidator {
             cabundle[i] = attestationTbs.slice(ptrs.cabundle[i]);
         }
 
-        ICertManager.VerifiedCert memory parent = certManager.verifyCertBundle(cert, cabundle);
+        ICertManager.VerifiedCert memory parent = verifyCertBundle(cert, cabundle);
         bytes memory hash = Sha2Ext.sha384(attestationTbs, 0, attestationTbs.length);
         _verifySignature(parent.pubKey, hash, signature);
 
         return ptrs;
+    }
+
+    function verifyCertBundle(bytes memory certificate, bytes[] memory cabundle)
+        internal
+        returns (ICertManager.VerifiedCert memory)
+    {
+        bytes32 parentHash;
+        for (uint256 i = 0; i < cabundle.length; i++) {
+            parentHash = certManager.verifyCACert(cabundle[i], parentHash);
+        }
+        return certManager.verifyClientCert(certificate, parentHash);
     }
 
     function _constructAttestationTbs(

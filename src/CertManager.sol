@@ -61,21 +61,14 @@ contract CertManager is ICertManager {
         );
     }
 
-    function verifyCert(bytes memory cert, bool ca, bytes32 parentCertHash) external returns (VerifiedCert memory) {
-        return _verifyCert(cert, keccak256(cert), ca, _loadVerified(parentCertHash));
+    function verifyCACert(bytes memory cert, bytes32 parentCertHash) external returns (bytes32) {
+        bytes32 certHash = keccak256(cert);
+        _verifyCert(cert, certHash, true, _loadVerified(parentCertHash));
+        return certHash;
     }
 
-    function verifyCertBundle(bytes memory certificate, bytes[] calldata cabundle)
-        external
-        returns (VerifiedCert memory)
-    {
-        VerifiedCert memory parent;
-        for (uint256 i = 0; i < cabundle.length; i++) {
-            bytes32 certHash = keccak256(cabundle[i]);
-            require(i > 0 || certHash == ROOT_CA_CERT_HASH, "Root CA cert not matching");
-            parent = _verifyCert(cabundle[i], certHash, true, parent);
-        }
-        return _verifyCert(certificate, keccak256(certificate), false, parent);
+    function verifyClientCert(bytes memory cert, bytes32 parentCertHash) external returns (VerifiedCert memory) {
+        return _verifyCert(cert, keccak256(cert), false, _loadVerified(parentCertHash));
     }
 
     function _verifyCert(bytes memory certificate, bytes32 certHash, bool ca, VerifiedCert memory parent)

@@ -10,11 +10,7 @@ interface ICertManager {
         bytes pubKey;
     }
 
-    function verifyCert(bytes memory cert, bool clientCert, bytes32 parentCertHash)
-        external
-        returns (VerifiedCert memory);
+    function verifyCACert(bytes memory cert, bytes32 parentCertHash) external returns (bytes32);
 
-    function verifyCertBundle(bytes memory certificate, bytes[] calldata cabundle)
-        external
-        returns (VerifiedCert memory);
+    function verifyClientCert(bytes memory cert, bytes32 parentCertHash) external returns (VerifiedCert memory);
 }
