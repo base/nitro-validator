@@ -199,6 +199,7 @@ library Asn1Decode {
     }
 
     function readNodeLength(bytes memory der, uint256 ix) private pure returns (Asn1Ptr) {
+        require(der[ix] & 0x1f != 0x1f, "ASN.1 tags longer than 1-byte are not supported");
         uint256 length;
         uint80 ixFirstContentByte;
         if ((der[ix + 1] & 0x80) == 0) {
