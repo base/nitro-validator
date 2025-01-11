@@ -92,6 +92,7 @@ library Sha2Ext {
             0x6c44198c4a475817
         ];
 
+        require(offset + length <= message.length, "OUT_OF_BOUNDS");
         bytes memory padding = padMessage(message, offset, length);
         require(padding.length % 128 == 0, "PADDING_ERROR");
         uint64[80] memory w;
