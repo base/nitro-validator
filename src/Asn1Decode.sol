@@ -200,10 +200,10 @@ library Asn1Decode {
 
     function readNodeLength(bytes memory der, uint256 ix) private pure returns (Asn1Ptr) {
         uint256 length;
-        uint80 ixFirstContentByte;
+        uint256 ixFirstContentByte;
         if ((der[ix + 1] & 0x80) == 0) {
             length = uint8(der[ix + 1]);
-            ixFirstContentByte = uint80(ix + 2);
+            ixFirstContentByte = ix + 2;
         } else {
             uint8 lengthbytesLength = uint8(der[ix + 1] & 0x7F);
             if (lengthbytesLength == 1) {
@@ -212,10 +212,11 @@ library Asn1Decode {
                 length = der.readUint16(ix + 2);
             } else {
                 length = uint256(readBytesN(der, ix + 2, lengthbytesLength) >> (32 - lengthbytesLength) * 8);
+                require(length <= 2 ** 64 - 1); // bound to max uint64 to be safe
             }
-            ixFirstContentByte = uint80(ix + 2 + lengthbytesLength);
+            ixFirstContentByte = ix + 2 + lengthbytesLength;
         }
-        return LibAsn1Ptr.toAsn1Ptr(ix, ixFirstContentByte, uint80(length));
+        return LibAsn1Ptr.toAsn1Ptr(ix, ixFirstContentByte, length);
     }
 
     function readBytesN(bytes memory self, uint256 idx, uint256 len) private pure returns (bytes32 ret) {
