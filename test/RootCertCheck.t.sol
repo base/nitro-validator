@@ -20,7 +20,7 @@ contract RootCertCheckTest is Test, CertManager {
     function test_ParseCert() public view {
         Asn1Ptr root = ROOT_CA_CERT.root();
         Asn1Ptr tbsCertPtr = ROOT_CA_CERT.firstChildOf(root);
-        (uint64 notAfter, int64 maxPathLen,, bytes32 subjectHash, bytes memory pubKey) =
+        (uint64 notAfter, int64 maxPathLen, bytes32 subjectHash, bytes memory pubKey) =
             _parseTbs(ROOT_CA_CERT, tbsCertPtr, true);
 
         bytes32 certHash = keccak256(ROOT_CA_CERT);
