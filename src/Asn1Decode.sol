@@ -130,7 +130,7 @@ library Asn1Decode {
      * @dev Extract value of octet string node from DER-encoded structure
      * @param der The DER-encoded ASN1 structure
      * @param ptr Points to the indices of the current node
-     * @return A pointer to a octet string
+     * @return A pointer to an octet string
      */
     function octetString(bytes memory der, Asn1Ptr ptr) internal pure returns (Asn1Ptr) {
         require(der[ptr.header()] == 0x04, "Not type OCTET STRING");
