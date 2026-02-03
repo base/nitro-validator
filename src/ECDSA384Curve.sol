@@ -23,13 +23,7 @@ library ECDSA384Curve {
 
     function p384() internal pure returns (ECDSA384.Parameters memory) {
         return ECDSA384.Parameters({
-            a: CURVE_A,
-            b: CURVE_B,
-            gx: CURVE_GX,
-            gy: CURVE_GY,
-            p: CURVE_P,
-            n: CURVE_N,
-            lowSmax: CURVE_LOW_S_MAX
+            a: CURVE_A, b: CURVE_B, gx: CURVE_GX, gy: CURVE_GY, p: CURVE_P, n: CURVE_N, lowSmax: CURVE_LOW_S_MAX
         });
     }
 }

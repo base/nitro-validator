@@ -104,8 +104,9 @@ contract CertManager is ICertManager {
 
         _verifyCertSignature(certificate, tbsCertPtr, parent.pubKey);
 
-        cert =
-            VerifiedCert({ca: ca, notAfter: notAfter, maxPathLen: maxPathLen, subjectHash: subjectHash, pubKey: pubKey});
+        cert = VerifiedCert({
+            ca: ca, notAfter: notAfter, maxPathLen: maxPathLen, subjectHash: subjectHash, pubKey: pubKey
+        });
         _saveVerified(certHash, cert);
 
         emit CertVerified(certHash);
@@ -313,11 +314,7 @@ contract CertManager is ICertManager {
         }
         bytes memory pubKey = packed.slice(0x31, packed.length - 0x31);
         return VerifiedCert({
-            ca: ca != 0,
-            notAfter: notAfter,
-            maxPathLen: maxPathLen,
-            subjectHash: subjectHash,
-            pubKey: pubKey
+            ca: ca != 0, notAfter: notAfter, maxPathLen: maxPathLen, subjectHash: subjectHash, pubKey: pubKey
         });
     }
 }
