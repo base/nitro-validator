@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 env:
-  FOUNDRY_PROFILE: ci
+  FOUNDRY_PROFILE: default
 
 jobs:
   check:
