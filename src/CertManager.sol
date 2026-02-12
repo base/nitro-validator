@@ -19,6 +19,12 @@ contract CertManager is ICertManager {
     using LibBytes for bytes;
 
     event CertVerified(bytes32 indexed certHash);
+    event CertHashCached(bytes32 indexed certHash);
+
+    // Cached SHA-384 hashes for certificate TBS data, keyed by keccak256(cert).
+    // Allows splitting the expensive SHA-384 + ECDSA384.verify across two transactions
+    // to stay within the EIP-7825 per-transaction gas limit (2^24 gas).
+    mapping(bytes32 => bytes) public certSha384Cache;
 
     // root CA certificate constants (don't store it to reduce contract size)
     bytes32 public constant ROOT_CA_CERT_HASH = 0x311d96fcd5c5e0ccf72ef548e2ea7d4c0cd53ad7c4cc49e67471aed41d61f185;
@@ -59,6 +65,21 @@ contract CertManager is ICertManager {
                 pubKey: ROOT_CA_CERT_PUB_KEY
             })
         );
+    }
+
+    /// @notice Pre-computes and caches the SHA-384 hash of a certificate's TBS (to-be-signed) data.
+    /// @dev Call this in a separate transaction before verifyCACert/verifyClientCert to split
+    ///      the gas cost. Necessary on networks with per-transaction gas limits (e.g. EIP-7825).
+    /// @param cert The DER-encoded certificate.
+    function cacheCertHash(bytes memory cert) external {
+        bytes32 key = keccak256(cert);
+        require(certSha384Cache[key].length == 0, "cert hash already cached");
+
+        Asn1Ptr root = cert.root();
+        Asn1Ptr tbsCertPtr = cert.firstChildOf(root);
+        certSha384Cache[key] = Sha2Ext.sha384(cert, tbsCertPtr.header(), tbsCertPtr.totalLength());
+
+        emit CertHashCached(key);
     }
 
     function verifyCACert(bytes memory cert, bytes32 parentCertHash) external returns (bytes32) {
@@ -271,11 +292,11 @@ contract CertManager is ICertManager {
         }
     }
 
-    function _verifyCertSignature(bytes memory certificate, Asn1Ptr ptr, bytes memory pubKey) internal view {
+    function _verifyCertSignature(bytes memory certificate, Asn1Ptr ptr, bytes memory pubKey) internal {
         Asn1Ptr sigAlgoPtr = certificate.nextSiblingOf(ptr);
         require(certificate.keccak(sigAlgoPtr.content(), sigAlgoPtr.length()) == CERT_ALGO_OID, "invalid cert sig algo");
 
-        bytes memory hash = Sha2Ext.sha384(certificate, ptr.header(), ptr.totalLength());
+        bytes memory hash = _getOrComputeCertHash(certificate, ptr);
 
         Asn1Ptr sigPtr = certificate.nextSiblingOf(sigAlgoPtr);
         Asn1Ptr sigBPtr = certificate.bitstring(sigPtr);
@@ -287,6 +308,18 @@ contract CertManager is ICertManager {
         bytes memory sigPacked = abi.encodePacked(rhi, rlo, shi, slo);
 
         _verifySignature(pubKey, hash, sigPacked);
+    }
+
+    /// @dev Returns the cached SHA-384 hash if available, otherwise computes it inline.
+    ///      Deletes the cache entry after use to reclaim storage and prevent stale entries.
+    function _getOrComputeCertHash(bytes memory certificate, Asn1Ptr ptr) internal returns (bytes memory) {
+        bytes32 key = keccak256(certificate);
+        bytes memory cached = certSha384Cache[key];
+        if (cached.length != 0) {
+            delete certSha384Cache[key];
+            return cached;
+        }
+        return Sha2Ext.sha384(certificate, ptr.header(), ptr.totalLength());
     }
 
     function _verifySignature(bytes memory pubKey, bytes memory hash, bytes memory sig) internal view {
