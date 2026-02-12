@@ -40,10 +40,30 @@ contract NitroValidator {
         CborElement nonce;
     }
 
+    // Cached SHA-384 hashes for attestation TBS data, keyed by keccak256(attestationTbs).
+    // This allows splitting the expensive SHA-384 + ECDSA384.verify operations across
+    // two transactions to stay within the EIP-7825 per-transaction gas limit (2^24 gas).
+    mapping(bytes32 => bytes) public sha384Cache;
+
+    event AttestationHashCached(bytes32 indexed attestationTbsHash);
+
     ICertManager public immutable certManager;
 
     constructor(ICertManager _certManager) {
         certManager = _certManager;
+    }
+
+    /// @notice Pre-computes and caches the SHA-384 hash of an attestation TBS.
+    /// @dev Call this in a separate transaction before validateAttestation() to split the
+    ///      gas cost across two transactions. This is necessary on networks with per-transaction
+    ///      gas limits (e.g. Ethereum L1 post-EIP-7825) where computing SHA-384 (~8.4M gas)
+    ///      and ECDSA384.verify (~7.8M gas) together exceeds the limit.
+    /// @param attestationTbs The attestation to-be-signed data.
+    function cacheAttestationHash(bytes memory attestationTbs) external {
+        bytes32 key = keccak256(attestationTbs);
+        require(sha384Cache[key].length == 0, "hash already cached");
+        sha384Cache[key] = Sha2Ext.sha384(attestationTbs, 0, attestationTbs.length);
+        emit AttestationHashCached(key);
     }
 
     function decodeAttestationTbs(bytes memory attestation)
@@ -99,7 +119,7 @@ contract NitroValidator {
         }
 
         ICertManager.VerifiedCert memory parent = verifyCertBundle(cert, cabundle);
-        bytes memory hash = Sha2Ext.sha384(attestationTbs, 0, attestationTbs.length);
+        bytes memory hash = _getOrComputeHash(attestationTbs);
         _verifySignature(parent.pubKey, hash, signature);
 
         return ptrs;
@@ -200,6 +220,18 @@ contract NitroValidator {
         }
 
         return ptrs;
+    }
+
+    /// @dev Returns the cached SHA-384 hash if available, otherwise computes it inline.
+    ///      Deletes the cache entry after use to reclaim storage and prevent stale entries.
+    function _getOrComputeHash(bytes memory attestationTbs) internal returns (bytes memory) {
+        bytes32 key = keccak256(attestationTbs);
+        bytes memory cached = sha384Cache[key];
+        if (cached.length != 0) {
+            delete sha384Cache[key];
+            return cached;
+        }
+        return Sha2Ext.sha384(attestationTbs, 0, attestationTbs.length);
     }
 
     function _verifySignature(bytes memory pubKey, bytes memory hash, bytes memory sig) internal view {
