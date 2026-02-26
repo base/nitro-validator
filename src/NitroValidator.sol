@@ -153,6 +153,8 @@ contract NitroValidator {
         Ptrs memory ptrs;
         uint256 end = payload.end();
         while (current.end() < end) {
+            // Break marker (0xFF) terminates indefinite-length maps
+            if (uint8(attestationTbs[current.end()]) == 0xff) break;
             current = attestationTbs.nextTextString(current);
             bytes32 keyHash = attestationTbs.keccak(current);
             if (keyHash == MODULE_ID_KEY) {

@@ -110,6 +110,10 @@ library CborDecode {
             return LibCborElement.toCborElement(_type | ai, ix + 1, 0);
         }
         require(_type == expectedType, "unexpected type");
+        if (ai == 31) {
+            // Indefinite-length map or array (0xBF, 0x9F) — count unknown
+            return LibCborElement.toCborElement(_type, ix + 1, 0);
+        }
         require(ai < 28, "unsupported type");
         if (ai == 24) {
             return LibCborElement.toCborElement(_type, ix + 2, uint8(cbor[ix + 1]));
