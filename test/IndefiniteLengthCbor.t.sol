@@ -484,6 +484,108 @@ contract NitroValidatorIndefiniteLengthTest is Test {
         assertEq(p.cabundle.length, 0, "cabundle not parsed");
     }
 
+    // ── Converter verification ───────────────────────────────
+
+    /// @dev Verifies _toIndefiniteLength produces structurally correct output:
+    ///      +1 byte total, break marker appended, map header replaced with 0xBF,
+    ///      payload byte-string length incremented, entry content preserved.
+    function test_converter_structurallyCorrect() public pure {
+        bytes memory def = _buildTbs(abi.encodePacked(hex"a9", _entries()));
+        bytes memory indef = _toIndefiniteLength(def);
+
+        // Output is exactly 1 byte longer (break marker appended)
+        assertEq(indef.length, def.length + 1, "length +1");
+
+        // Last byte is break marker
+        assertEq(uint8(indef[indef.length - 1]), CBOR_BREAK, "last byte 0xFF");
+
+        // Locate map header via payload byte-string AI
+        uint8 bstrAi = uint8(indef[18]) & 0x1f;
+        uint256 mapIdx = bstrAi <= 23 ? uint256(19) : bstrAi == 24 ? uint256(20) : uint256(21);
+
+        // Map header replaced with indefinite marker
+        assertEq(uint8(indef[mapIdx]), CBOR_MAP_INDEFINITE, "map header 0xBF");
+
+        // Payload byte-string length incremented by 1
+        if (bstrAi == 24) {
+            assertEq(uint8(indef[19]), uint8(def[19]) + 1, "bstr len +1");
+        } else if (bstrAi == 25) {
+            uint16 defLen = (uint16(uint8(def[19])) << 8) | uint16(uint8(def[20]));
+            uint16 indefLen = (uint16(uint8(indef[19])) << 8) | uint16(uint8(indef[20]));
+            assertEq(uint256(indefLen), uint256(defLen + 1), "bstr len +1");
+        }
+
+        // Entry content between map header and break marker is preserved
+        for (uint256 i = mapIdx + 1; i < def.length; i++) {
+            assertEq(uint8(indef[i]), uint8(def[i]), "entry content preserved");
+        }
+    }
+
+    // ── Break check boundary: 0xFF in value content ─────────
+
+    /// @dev Certificate byte-string whose content is [0xFF, 0xFF], placed
+    ///      immediately before the break marker. After parsing, current.end()
+    ///      points past the content to the break code. Verifies the break check
+    ///      at NitroValidator.sol:157 only examines header positions, not value
+    ///      content bytes.
+    function test_edge_certValueContainingFF_beforeBreak() public view {
+        bytes memory entries = abi.encodePacked(
+            hex"6b6365727469666963617465", // key "certificate"
+            hex"42ffff" //                    val 2-byte bstr: [0xFF, 0xFF]
+        );
+        bytes memory tbs = _buildTbs(abi.encodePacked(CBOR_MAP_INDEFINITE, entries, CBOR_BREAK));
+
+        NitroValidator.Ptrs memory p = validator.parseAttestation(tbs);
+        assertEq(p.cert.length(), 2, "cert parsed despite 0xFF content");
+    }
+
+    // ── Inner indefinite-length structures ───────────────────
+
+    /// @dev Inner PCRs map as empty indefinite-length (0xBF 0xFF) inside a
+    ///      definite-length outer map. The inner 0xFF break marker is picked up
+    ///      by the outer while-loop's break check (NitroValidator.sol:157),
+    ///      causing silent early termination. Entries after pcrs are not parsed.
+    function test_edge_innerIndefinitePcrsEmpty_outerBreakTriggered() public view {
+        bytes memory part1 = abi.encodePacked(
+            hex"696d6f64756c655f6964",
+            hex"6474657374", //       module_id: "test"
+            hex"66646967657374",
+            hex"66534841333834", //         digest: "SHA384"
+            hex"6974696d657374616d70",
+            hex"1a000f4240" //        timestamp: 1_000_000
+        );
+        bytes memory part2 = abi.encodePacked(
+            hex"6470637273", // key "pcrs"
+            hex"bfff" //       val: empty indefinite-length map {0xBF, 0xFF}
+        );
+        bytes memory part3 = abi.encodePacked(
+            hex"6b6365727469666963617465",
+            hex"4400000000", //   certificate: bytes(4)
+            hex"68636162756e646c65",
+            hex"814400000000", //       cabundle: [bytes(4)]
+            hex"6a7075626c69635f6b6579",
+            hex"f6", //            public_key: null
+            hex"69757365725f64617461",
+            hex"f6", //              user_data: null
+            hex"656e6f6e6365",
+            hex"f6" //                       nonce: null
+        );
+        bytes memory tbs = _buildTbs(abi.encodePacked(hex"a9", part1, part2, part3));
+        NitroValidator.Ptrs memory p = validator.parseAttestation(tbs);
+
+        // Fields before pcrs: parsed normally
+        assertEq(p.moduleID.length(), SYNTH_MODULE_ID_LEN, "module_id parsed");
+        assertEq(p.digest.length(), SYNTH_DIGEST_LEN, "digest parsed");
+        assertEq(p.timestamp, SYNTH_TIMESTAMP, "timestamp parsed");
+
+        // pcrs: empty (indefinite-length map -> value=0)
+        assertEq(p.pcrs.length, 0, "pcrs empty");
+
+        // Fields after pcrs: NOT parsed — inner 0xFF triggers outer break
+        assertEq(p.cert.length(), 0, "cert not parsed");
+        assertEq(p.cabundle.length, 0, "cabundle not parsed");
+    }
+
     // ══════════════════════════════════════════════════════════
     //  NEGATIVE TESTS
     // ══════════════════════════════════════════════════════════
@@ -506,5 +608,31 @@ contract NitroValidatorIndefiniteLengthTest is Test {
         );
         vm.expectRevert("invalid attestation key");
         validator.parseAttestation(_buildTbs(abi.encodePacked(CBOR_MAP_INDEFINITE, badEntry, CBOR_BREAK)));
+    }
+
+    /// @dev Indefinite-length map without a trailing 0xFF break marker.
+    ///      Parser reads past valid entries into trailing garbage, reverting
+    ///      when it encounters a non-text-string byte as the next key.
+    function test_neg_missingBreakMarker_reverts() public {
+        bytes memory entries = _partialEntries();
+        bytes memory garbage = hex"0000"; // positive int 0 — not a text string key
+        vm.expectRevert("unexpected type");
+        validator.parseAttestation(_buildTbs(abi.encodePacked(CBOR_MAP_INDEFINITE, entries, garbage)));
+    }
+
+    /// @dev Indefinite-length outer map containing a non-empty indefinite-length
+    ///      inner cabundle array. The inner array elements are not consumed by
+    ///      the cabundle loop (value=0 for indefinite), so the parser tries to
+    ///      interpret the inner byte-string element as an outer text-string key,
+    ///      reverting with "unexpected type".
+    function test_neg_nestedIndefiniteNonEmptyArray_reverts() public {
+        bytes memory entries = abi.encodePacked(
+            hex"68636162756e646c65", // key "cabundle"
+            hex"9f", //                indefinite-length array
+            hex"4400000000", //        one bstr element (not consumed by inner loop)
+            hex"ff" //                 inner array break
+        );
+        vm.expectRevert("unexpected type");
+        validator.parseAttestation(_buildTbs(abi.encodePacked(CBOR_MAP_INDEFINITE, entries, CBOR_BREAK)));
     }
 }
