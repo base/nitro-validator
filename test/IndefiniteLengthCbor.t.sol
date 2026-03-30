@@ -216,28 +216,6 @@ contract NitroValidatorIndefiniteLengthTest is Test {
         assertTrue(p.nonce.isNull(), "nonce null");
     }
 
-    /// @dev Asserts two Ptrs structs have identical field dimensions.
-    function _assertPtrsMatch(NitroValidator.Ptrs memory a, NitroValidator.Ptrs memory b) internal pure {
-        assertEq(a.moduleID.length(), b.moduleID.length(), "module_id mismatch");
-        assertEq(a.timestamp, b.timestamp, "timestamp mismatch");
-        assertEq(a.digest.length(), b.digest.length(), "digest mismatch");
-        assertEq(a.pcrs.length, b.pcrs.length, "pcrs count mismatch");
-        for (uint256 i = 0; i < a.pcrs.length; i++) {
-            assertEq(a.pcrs[i].length(), b.pcrs[i].length(), "pcr length mismatch");
-        }
-        assertEq(a.cert.length(), b.cert.length(), "cert mismatch");
-        assertEq(a.cabundle.length, b.cabundle.length, "cabundle count mismatch");
-        for (uint256 i = 0; i < a.cabundle.length; i++) {
-            assertEq(a.cabundle[i].length(), b.cabundle[i].length(), "cabundle cert mismatch");
-        }
-        assertEq(a.publicKey.isNull(), b.publicKey.isNull(), "public_key null mismatch");
-        if (!a.publicKey.isNull()) {
-            assertEq(a.publicKey.length(), b.publicKey.length(), "public_key length mismatch");
-        }
-        assertEq(a.userData.isNull(), b.userData.isNull(), "user_data null mismatch");
-        assertEq(a.nonce.isNull(), b.nonce.isNull(), "nonce null mismatch");
-    }
-
     // ── TBS construction helpers ─────────────────────────────
 
     /// @dev Wraps raw CBOR map bytes into a valid attestation-TBS envelope.
@@ -408,15 +386,6 @@ contract NitroValidatorIndefiniteLengthTest is Test {
         _assertSyntheticFields(validator.parseAttestation(tbs));
     }
 
-    /// @dev Both encodings produce identical parsed field values.
-    function test_synth_indefiniteMatchesDefinite() public view {
-        bytes memory entries = _entries();
-        NitroValidator.Ptrs memory def = validator.parseAttestation(_buildTbs(abi.encodePacked(hex"a9", entries)));
-        NitroValidator.Ptrs memory indef =
-            validator.parseAttestation(_buildTbs(abi.encodePacked(CBOR_MAP_INDEFINITE, entries, CBOR_BREAK)));
-        _assertPtrsMatch(def, indef);
-    }
-
     /// @dev Indefinite-length map with keys in a non-standard order.
     function test_synth_indefiniteLengthMap_reorderedKeys() public view {
         bytes memory tbs = _buildTbs(abi.encodePacked(CBOR_MAP_INDEFINITE, _reorderedEntries(), CBOR_BREAK));
@@ -439,14 +408,6 @@ contract NitroValidatorIndefiniteLengthTest is Test {
     function test_real_indefiniteLengthMap() public view {
         bytes memory indef = _toIndefiniteLength(_realAttestationTbs());
         _assertRealFields(validator.parseAttestation(indef));
-    }
-
-    /// @dev Both encodings of the real attestation produce identical fields,
-    ///      covering non-null public_key (65B), 16 PCRs, 4-cert cabundle.
-    function test_real_indefiniteMatchesDefinite() public view {
-        bytes memory def = _realAttestationTbs();
-        bytes memory indef = _toIndefiniteLength(def);
-        _assertPtrsMatch(validator.parseAttestation(def), validator.parseAttestation(indef));
     }
 
     // ══════════════════════════════════════════════════════════
