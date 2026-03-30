@@ -111,7 +111,13 @@ library CborDecode {
         }
         require(_type == expectedType, "unexpected type");
         if (ai == 31) {
-            // Indefinite-length map or array (0xBF, 0x9F) — count unknown
+            // Indefinite-length encoding is only defined for maps (0xBF) and
+            // arrays (0x9F) per RFC 8949.  Other major types with ai=31 (e.g.
+            // 0x5F, 0x7F, 0x1F) are reserved or chunked encodings that this
+            // decoder does not support.  Downstream validation in
+            // validateAttestation() would also catch these cases, but rejecting
+            // here gives an immediate, unambiguous revert.
+            require(_type == 0xa0 || _type == 0x80, "indefinite-length only for maps/arrays");
             return LibCborElement.toCborElement(_type, ix + 1, 0);
         }
         require(ai < 28, "unsupported type");
