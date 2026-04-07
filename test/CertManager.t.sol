@@ -20,10 +20,12 @@ contract Asn1DecodeHarness {
 
 contract CertManagerTest is Test {
     CertManager public certManager;
+    Asn1DecodeHarness public harness;
 
     function setUp() public {
         vm.warp(1732580000);
         certManager = new CertManager();
+        harness = new Asn1DecodeHarness();
     }
 
     function test_VerifyCertBundle() public {
@@ -56,8 +58,7 @@ contract CertManagerTest is Test {
     // 's' INTEGER from cabundle[3] (2026-04-02 attestation): DER-encoded with a 0x00
     // sign-padding byte, leaving valueLength=47. Verifies hi/lo are correctly zero-padded
     // to the full 48-byte scalar rather than packed flush against the stripped bytes.
-    function test_uint384At_Short47Bytes() public {
-        Asn1DecodeHarness harness = new Asn1DecodeHarness();
+    function test_uint384At_Short47Bytes() public view {
         bytes memory der =
             hex"023000caf59019bfbcc6f6ed365e5a892ceaa2eda9c549dc01460f5fe650814ebe0e7ee855d3bcffde95afd2e82e21df0eac";
         (uint128 hi, uint256 lo) = harness.uint384At(der, 0, 2, 48);
@@ -85,5 +86,62 @@ contract CertManagerTest is Test {
         cm.verifyCACert(CB1, keccak256(CB0));
         cm.verifyCACert(CB2, keccak256(CB1));
         cm.verifyCACert(CB3, keccak256(CB2)); // reverts with "invalid sig" on unpatched code
+    }
+
+    function testFuzz_uint384At_LeadingZeros(uint8 numZeros, uint128 hiSeed, uint256 loSeed) public view {
+        numZeros = uint8(bound(numZeros, 0, 16));
+
+        uint128 expectedHi;
+        uint256 expectedLo;
+
+        if (numZeros == 16) {
+            expectedHi = 0;
+            expectedLo = loSeed | (uint256(1) << 248);
+        } else {
+            uint128 mask = type(uint128).max >> (numZeros * 8);
+            expectedHi = (hiSeed & mask) | (uint128(1) << ((15 - numZeros) * 8));
+            expectedLo = loSeed;
+        }
+
+        bytes memory scalar48 = abi.encodePacked(expectedHi, expectedLo);
+        bytes memory der = _derEncodeP384Integer(scalar48);
+
+        uint256 contentLen = uint256(uint8(der[1]));
+        (uint128 hi, uint256 lo) = harness.uint384At(der, 0, 2, contentLen);
+
+        assertEq(hi, expectedHi);
+        assertEq(lo, expectedLo);
+    }
+
+    function _derEncodeP384Integer(bytes memory scalar48) internal pure returns (bytes memory) {
+        require(scalar48.length == 48);
+
+        uint256 i = 0;
+        while (i < 48 && scalar48[i] == 0) {
+            i++;
+        }
+
+        if (i == 48) return hex"020100";
+
+        uint256 minLen = 48 - i;
+        bool needsPad = uint8(scalar48[i]) >= 0x80;
+        uint256 contentLen = needsPad ? minLen + 1 : minLen;
+
+        bytes memory der = new bytes(2 + contentLen);
+        der[0] = 0x02;
+        der[1] = bytes1(uint8(contentLen));
+
+        uint256 offset = 2;
+        if (needsPad) {
+            der[offset] = 0x00;
+            offset++;
+        }
+
+        for (uint256 j = i; j < 48; j++) {
+            der[offset] = scalar48[j];
+            offset++;
+        }
+
+        return der;
     }
 }
