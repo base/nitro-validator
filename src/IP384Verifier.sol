@@ -7,5 +7,5 @@ interface IP384Verifier {
         bytes memory signature,
         bytes memory pubKey,
         bytes memory inverseHints
-    ) external returns (bool);
+    ) external view returns (bool);
 }

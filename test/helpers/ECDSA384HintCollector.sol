@@ -14,9 +14,9 @@ import {MemoryUtils} from "@solarity/libs/utils/MemoryUtils.sol";
  *
  * We also tried using projective coordinates, however, the gas consumption rose to ~9 million gas.
  */
-library ECDSA384Bench {
+library ECDSA384HintCollectorLib {
     using MemoryUtils for *;
-    using U384Bench for *;
+    using U384HintCollector for *;
 
     /**
      * @notice 384-bit curve parameters.
@@ -101,8 +101,8 @@ library ECDSA384Bench {
         unchecked {
             _Inputs memory inputs_;
 
-            (inputs_.r, inputs_.s) = U384Bench.init2(signature_);
-            (inputs_.x, inputs_.y) = U384Bench.init2(pubKey_);
+            (inputs_.r, inputs_.s) = U384HintCollector.init2(signature_);
+            (inputs_.x, inputs_.y) = U384HintCollector.init2(pubKey_);
 
             _Parameters memory params_ = _Parameters({
                 a: curveParams_.a.init(),
@@ -114,19 +114,21 @@ library ECDSA384Bench {
                 lowSmax: curveParams_.lowSmax.init()
             });
 
-            uint256 call =
-                useHints_ ? U384Bench.initCallWithHints(params_.p, inverseHints_) : U384Bench.initCall(params_.p);
+            uint256 call = useHints_
+                ? U384HintCollector.initCallWithHints(params_.p, inverseHints_)
+                : U384HintCollector.initCall(params_.p);
 
             /// accept s only from the lower part of the curve
             if (
-                U384Bench.eqInteger(inputs_.r, 0) || U384Bench.cmp(inputs_.r, params_.n) >= 0
-                    || U384Bench.eqInteger(inputs_.s, 0) || U384Bench.cmp(inputs_.s, params_.lowSmax) > 0
+                U384HintCollector.eqInteger(inputs_.r, 0) || U384HintCollector.cmp(inputs_.r, params_.n) >= 0
+                    || U384HintCollector.eqInteger(inputs_.s, 0)
+                    || U384HintCollector.cmp(inputs_.s, params_.lowSmax) > 0
             ) {
-                return (false, U384Bench.hintCursor(call));
+                return (false, U384HintCollector.hintCursor(call));
             }
 
             if (!_isOnCurve(call, params_.p, params_.a, params_.b, inputs_.x, inputs_.y)) {
-                return (false, U384Bench.hintCursor(call));
+                return (false, U384HintCollector.hintCursor(call));
             }
             _checkpoint(0);
 
@@ -147,12 +149,12 @@ library ECDSA384Bench {
                 }
             }
 
-            uint256 scalar1 = U384Bench.moddiv(call, hashedMessage_.init(), inputs_.s, params_.n);
-            uint256 scalar2 = U384Bench.moddiv(call, inputs_.r, inputs_.s, params_.n);
+            uint256 scalar1 = U384HintCollector.moddiv(call, hashedMessage_.init(), inputs_.s, params_.n);
+            uint256 scalar2 = U384HintCollector.moddiv(call, inputs_.r, inputs_.s, params_.n);
             _checkpoint(1);
 
             {
-                uint256 three = U384Bench.init(3);
+                uint256 three = U384HintCollector.init(3);
 
                 /// We use 6-bit masks where the first 3 bits refer to `scalar1` and the last 3 bits refer to `scalar2`.
                 uint256[2][64] memory points_ = _precomputePointsTable(
@@ -164,10 +166,10 @@ library ECDSA384Bench {
                 _checkpoint(3);
             }
 
-            U384Bench.modAssign(call, scalar1, params_.n);
+            U384HintCollector.modAssign(call, scalar1, params_.n);
             _checkpoint(4);
 
-            return (U384Bench.eq(scalar1, inputs_.r), U384Bench.hintCursor(call));
+            return (U384HintCollector.eq(scalar1, inputs_.r), U384HintCollector.hintCursor(call));
         }
     }
 
@@ -183,22 +185,25 @@ library ECDSA384Bench {
      */
     function _isOnCurve(uint256 call, uint256 p, uint256 a, uint256 b, uint256 x, uint256 y) private returns (bool) {
         unchecked {
-            if (U384Bench.eqInteger(x, 0) || U384Bench.eq(x, p) || U384Bench.eqInteger(y, 0) || U384Bench.eq(y, p)) {
+            if (
+                U384HintCollector.eqInteger(x, 0) || U384HintCollector.eq(x, p) || U384HintCollector.eqInteger(y, 0)
+                    || U384HintCollector.eq(y, p)
+            ) {
                 return false;
             }
 
-            uint256 LHS = U384Bench.modexp(call, y, 2);
-            uint256 RHS = U384Bench.modexp(call, x, 3);
+            uint256 LHS = U384HintCollector.modexp(call, y, 2);
+            uint256 RHS = U384HintCollector.modexp(call, x, 3);
 
-            if (!U384Bench.eqInteger(a, 0)) {
-                RHS = U384Bench.modadd(RHS, U384Bench.modmul(call, x, a), p); // x^3 + a*x
+            if (!U384HintCollector.eqInteger(a, 0)) {
+                RHS = U384HintCollector.modadd(RHS, U384HintCollector.modmul(call, x, a), p); // x^3 + a*x
             }
 
-            if (!U384Bench.eqInteger(b, 0)) {
-                RHS = U384Bench.modadd(RHS, b, p); // x^3 + a*x + b
+            if (!U384HintCollector.eqInteger(b, 0)) {
+                RHS = U384HintCollector.modadd(RHS, b, p); // x^3 + a*x + b
             }
 
-            return U384Bench.eq(LHS, RHS);
+            return U384HintCollector.eq(LHS, RHS);
         }
     }
 
@@ -279,24 +284,24 @@ library ECDSA384Bench {
                 return (0, 0);
             }
 
-            if (U384Bench.eqInteger(y1, 0)) {
+            if (U384HintCollector.eqInteger(y1, 0)) {
                 return (0, 0);
             }
 
-            uint256 m1 = U384Bench.modexp(call, x1, 2);
-            U384Bench.modmulAssign(call, m1, three);
-            U384Bench.modaddAssign(m1, a, p);
+            uint256 m1 = U384HintCollector.modexp(call, x1, 2);
+            U384HintCollector.modmulAssign(call, m1, three);
+            U384HintCollector.modaddAssign(m1, a, p);
 
-            uint256 m2 = U384Bench.modshl1(y1, p);
-            U384Bench.moddivAssign(call, m1, m2);
+            uint256 m2 = U384HintCollector.modshl1(y1, p);
+            U384HintCollector.moddivAssign(call, m1, m2);
 
-            x2 = U384Bench.modexp(call, m1, 2);
-            U384Bench.modsubAssign(x2, x1, p);
-            U384Bench.modsubAssign(x2, x1, p);
+            x2 = U384HintCollector.modexp(call, m1, 2);
+            U384HintCollector.modsubAssign(x2, x1, p);
+            U384HintCollector.modsubAssign(x2, x1, p);
 
-            y2 = U384Bench.modsub(x1, x2, p);
-            U384Bench.modmulAssign(call, y2, m1);
-            U384Bench.modsubAssign(y2, y1, p);
+            y2 = U384HintCollector.modsub(x1, x2, p);
+            U384HintCollector.modmulAssign(call, y2, m1);
+            U384HintCollector.modsubAssign(y2, y1, p);
         }
     }
 
@@ -312,62 +317,62 @@ library ECDSA384Bench {
                 return (0, 0);
             }
 
-            if (U384Bench.eqInteger(y1, 0)) {
+            if (U384HintCollector.eqInteger(y1, 0)) {
                 return (0, 0);
             }
 
-            uint256 m1 = U384Bench.modexp(call, x1, 2);
-            U384Bench.modmulAssign(call, m1, three);
-            U384Bench.modaddAssign(m1, a, p);
+            uint256 m1 = U384HintCollector.modexp(call, x1, 2);
+            U384HintCollector.modmulAssign(call, m1, three);
+            U384HintCollector.modaddAssign(m1, a, p);
 
-            uint256 m2 = U384Bench.modshl1(y1, p);
-            U384Bench.moddivAssign(call, m1, m2);
+            uint256 m2 = U384HintCollector.modshl1(y1, p);
+            U384HintCollector.moddivAssign(call, m1, m2);
 
-            x2 = U384Bench.modexp(call, m1, 2);
-            U384Bench.modsubAssign(x2, x1, p);
-            U384Bench.modsubAssign(x2, x1, p);
+            x2 = U384HintCollector.modexp(call, m1, 2);
+            U384HintCollector.modsubAssign(x2, x1, p);
+            U384HintCollector.modsubAssign(x2, x1, p);
 
-            y2 = U384Bench.modsub(x1, x2, p);
-            U384Bench.modmulAssign(call, y2, m1);
-            U384Bench.modsubAssign(y2, y1, p);
+            y2 = U384HintCollector.modsub(x1, x2, p);
+            U384HintCollector.modmulAssign(call, y2, m1);
+            U384HintCollector.modsubAssign(y2, y1, p);
 
-            if (U384Bench.eqInteger(y2, 0)) {
+            if (U384HintCollector.eqInteger(y2, 0)) {
                 return (0, 0);
             }
 
-            U384Bench.modexpAssignTo(call, m1, x2, 2);
-            U384Bench.modmulAssign(call, m1, three);
-            U384Bench.modaddAssign(m1, a, p);
+            U384HintCollector.modexpAssignTo(call, m1, x2, 2);
+            U384HintCollector.modmulAssign(call, m1, three);
+            U384HintCollector.modaddAssign(m1, a, p);
 
-            U384Bench.modshl1AssignTo(m2, y2, p);
-            U384Bench.moddivAssign(call, m1, m2);
+            U384HintCollector.modshl1AssignTo(m2, y2, p);
+            U384HintCollector.moddivAssign(call, m1, m2);
 
-            U384Bench.modexpAssignTo(call, x1, m1, 2);
-            U384Bench.modsubAssign(x1, x2, p);
-            U384Bench.modsubAssign(x1, x2, p);
+            U384HintCollector.modexpAssignTo(call, x1, m1, 2);
+            U384HintCollector.modsubAssign(x1, x2, p);
+            U384HintCollector.modsubAssign(x1, x2, p);
 
-            U384Bench.modsubAssignTo(y1, x2, x1, p);
-            U384Bench.modmulAssign(call, y1, m1);
-            U384Bench.modsubAssign(y1, y2, p);
+            U384HintCollector.modsubAssignTo(y1, x2, x1, p);
+            U384HintCollector.modmulAssign(call, y1, m1);
+            U384HintCollector.modsubAssign(y1, y2, p);
 
-            if (U384Bench.eqInteger(y1, 0)) {
+            if (U384HintCollector.eqInteger(y1, 0)) {
                 return (0, 0);
             }
 
-            U384Bench.modexpAssignTo(call, m1, x1, 2);
-            U384Bench.modmulAssign(call, m1, three);
-            U384Bench.modaddAssign(m1, a, p);
+            U384HintCollector.modexpAssignTo(call, m1, x1, 2);
+            U384HintCollector.modmulAssign(call, m1, three);
+            U384HintCollector.modaddAssign(m1, a, p);
 
-            U384Bench.modshl1AssignTo(m2, y1, p);
-            U384Bench.moddivAssign(call, m1, m2);
+            U384HintCollector.modshl1AssignTo(m2, y1, p);
+            U384HintCollector.moddivAssign(call, m1, m2);
 
-            U384Bench.modexpAssignTo(call, x2, m1, 2);
-            U384Bench.modsubAssign(x2, x1, p);
-            U384Bench.modsubAssign(x2, x1, p);
+            U384HintCollector.modexpAssignTo(call, x2, m1, 2);
+            U384HintCollector.modsubAssign(x2, x1, p);
+            U384HintCollector.modsubAssign(x2, x1, p);
 
-            U384Bench.modsubAssignTo(y2, x1, x2, p);
-            U384Bench.modmulAssign(call, y2, m1);
-            U384Bench.modsubAssign(y2, y1, p);
+            U384HintCollector.modsubAssignTo(y2, x1, x2, p);
+            U384HintCollector.modmulAssign(call, y2, m1);
+            U384HintCollector.modsubAssign(y2, y1, p);
         }
     }
 
@@ -393,26 +398,26 @@ library ECDSA384Bench {
                 return x1 == 0 ? (x2.copy(), y2.copy()) : (x1.copy(), y1.copy());
             }
 
-            if (U384Bench.eq(x1, x2)) {
-                if (U384Bench.eq(y1, y2)) {
+            if (U384HintCollector.eq(x1, x2)) {
+                if (U384HintCollector.eq(y1, y2)) {
                     return _twiceAffine(call, p, three, a, x1, y1);
                 }
 
                 return (0, 0);
             }
 
-            uint256 m1 = U384Bench.modsub(y1, y2, p);
-            uint256 m2 = U384Bench.modsub(x1, x2, p);
+            uint256 m1 = U384HintCollector.modsub(y1, y2, p);
+            uint256 m2 = U384HintCollector.modsub(x1, x2, p);
 
-            U384Bench.moddivAssign(call, m1, m2);
+            U384HintCollector.moddivAssign(call, m1, m2);
 
-            x3 = U384Bench.modexp(call, m1, 2);
-            U384Bench.modsubAssign(x3, x1, p);
-            U384Bench.modsubAssign(x3, x2, p);
+            x3 = U384HintCollector.modexp(call, m1, 2);
+            U384HintCollector.modsubAssign(x3, x1, p);
+            U384HintCollector.modsubAssign(x3, x2, p);
 
-            y3 = U384Bench.modsub(x1, x3, p);
-            U384Bench.modmulAssign(call, y3, m1);
-            U384Bench.modsubAssign(y3, y1, p);
+            y3 = U384HintCollector.modsub(x1, x3, p);
+            U384HintCollector.modmulAssign(call, y3, m1);
+            U384HintCollector.modsubAssign(y3, y1, p);
         }
     }
 
@@ -460,7 +465,7 @@ library ECDSA384Bench {
  *
  * Should not be used outside of this file.
  */
-library U384Bench {
+library U384HintCollector {
     uint256 private constant SHORT_ALLOCATION = 64;
 
     uint256 private constant MUL_OFFSET = 288;

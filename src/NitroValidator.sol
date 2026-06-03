@@ -4,8 +4,7 @@ pragma solidity ^0.8.15;
 import {ICertManager} from "./ICertManager.sol";
 import {Sha2Ext} from "./Sha2Ext.sol";
 import {CborDecode, CborElement, LibCborElement} from "./CborDecode.sol";
-import {ECDSA384} from "@solarity/libs/crypto/ECDSA384.sol";
-import {ECDSA384Curve} from "./ECDSA384Curve.sol";
+import {IP384Verifier} from "./IP384Verifier.sol";
 import {LibBytes} from "./LibBytes.sol";
 
 // adapted from https://github.com/marlinprotocol/NitroProver/blob/f1d368d1f172ad3a55cd2aaaa98ad6a6e7dcde9d/src/NitroProver.sol
@@ -41,9 +40,13 @@ contract NitroValidator {
     }
 
     ICertManager public immutable certManager;
+    IP384Verifier public immutable p384Verifier;
 
-    constructor(ICertManager _certManager) {
+    constructor(ICertManager _certManager, IP384Verifier _p384Verifier) {
+        require(address(_certManager) != address(0), "missing cert manager");
+        require(address(_p384Verifier) != address(0), "missing P384 verifier");
         certManager = _certManager;
+        p384Verifier = _p384Verifier;
     }
 
     function decodeAttestationTbs(bytes memory attestation)
@@ -70,7 +73,15 @@ contract NitroValidator {
         signature = attestation.slice(signaturePtr.start(), signaturePtr.length());
     }
 
-    function validateAttestation(bytes memory attestationTbs, bytes memory signature) public returns (Ptrs memory) {
+    function validateAttestation(bytes memory, bytes memory) public pure returns (Ptrs memory) {
+        revert("use hinted attestation verification");
+    }
+
+    function validateAttestationWithHints(
+        bytes memory attestationTbs,
+        bytes memory signature,
+        bytes memory attestationSigHints
+    ) public returns (Ptrs memory) {
         Ptrs memory ptrs = _parseAttestation(attestationTbs);
 
         require(ptrs.moduleID.length() > 0, "no module id");
@@ -98,22 +109,25 @@ contract NitroValidator {
             cabundle[i] = attestationTbs.slice(ptrs.cabundle[i]);
         }
 
-        ICertManager.VerifiedCert memory parent = verifyCertBundle(cert, cabundle);
+        ICertManager.VerifiedCert memory parent = verifyCachedCertBundle(cert, cabundle);
         bytes memory hash = Sha2Ext.sha384(attestationTbs, 0, attestationTbs.length);
-        _verifySignature(parent.pubKey, hash, signature);
+        require(
+            p384Verifier.verifyP384SignatureWithHints(hash, signature, parent.pubKey, attestationSigHints),
+            "invalid sig"
+        );
 
         return ptrs;
     }
 
-    function verifyCertBundle(bytes memory certificate, bytes[] memory cabundle)
+    function verifyCachedCertBundle(bytes memory certificate, bytes[] memory cabundle)
         internal
         returns (ICertManager.VerifiedCert memory)
     {
         bytes32 parentHash;
         for (uint256 i = 0; i < cabundle.length; i++) {
-            parentHash = certManager.verifyCACert(cabundle[i], parentHash);
+            parentHash = certManager.verifyCACertWithHints(cabundle[i], parentHash, "");
         }
-        return certManager.verifyClientCert(certificate, parentHash);
+        return certManager.verifyClientCertWithHints(certificate, parentHash, "");
     }
 
     function _constructAttestationTbs(
@@ -202,9 +216,5 @@ contract NitroValidator {
         }
 
         return ptrs;
-    }
-
-    function _verifySignature(bytes memory pubKey, bytes memory hash, bytes memory sig) internal view {
-        require(ECDSA384.verify(ECDSA384Curve.p384(), hash, sig, pubKey), "invalid sig");
     }
 }

@@ -13,4 +13,14 @@ interface ICertManager {
     function verifyCACert(bytes memory cert, bytes32 parentCertHash) external returns (bytes32);
 
     function verifyClientCert(bytes memory cert, bytes32 parentCertHash) external returns (VerifiedCert memory);
+
+    function verifyCACertWithHints(bytes memory cert, bytes32 parentCertHash, bytes memory signatureHints)
+        external
+        returns (bytes32);
+
+    function verifyClientCertWithHints(bytes memory cert, bytes32 parentCertHash, bytes memory signatureHints)
+        external
+        returns (VerifiedCert memory);
+
+    function loadVerified(bytes32 certHash) external view returns (VerifiedCert memory);
 }

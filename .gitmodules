@@ -3,4 +3,5 @@
 	url = https://github.com/foundry-rs/forge-std
 [submodule "lib/solidity-lib"]
 	path = lib/solidity-lib
-	url = https://github.com/dl-solarity/solidity-lib
+	url = https://github.com/leanthebean/solidity-lib
+	branch = hinted-p384-inversion

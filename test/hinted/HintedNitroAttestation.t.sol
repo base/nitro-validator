@@ -4,28 +4,24 @@ pragma solidity ^0.8.26;
 import {Test, console} from "forge-std/Test.sol";
 import {NitroValidator} from "../../src/NitroValidator.sol";
 import {CertManager} from "../../src/CertManager.sol";
-import {CertManagerHinted} from "../../src/CertManagerHinted.sol";
+import {CertManagerDemo} from "../../src/demo/CertManagerDemo.sol";
 import {ICertManager} from "../../src/ICertManager.sol";
 import {CborDecode} from "../../src/CborDecode.sol";
-import {NitroValidatorHinted} from "../../src/NitroValidatorHinted.sol";
 import {P384Verifier} from "../../src/P384Verifier.sol";
 import {Sha2Ext} from "../../src/Sha2Ext.sol";
-import {P384HintCollectorBench} from "./HintedNitroBench.sol";
+import {P384HintCollector} from "../helpers/HintedNitroTestHelpers.sol";
 
 contract NitroValidatorParseHarness is NitroValidator {
-    constructor(CertManager certManager) NitroValidator(certManager) {}
+    constructor(CertManager certManager, P384Verifier p384Verifier) NitroValidator(certManager, p384Verifier) {}
 
     function parseAttestation(bytes memory attestationTbs) external pure returns (Ptrs memory) {
         return _parseAttestation(attestationTbs);
     }
 }
 
-contract RealAttestationBenchTest is Test {
+contract HintedNitroAttestationTest is Test {
     using CborDecode for bytes;
 
-    uint256 constant P384_VERIFY_2565 = 7_938_921;
-    uint256 constant P384_VERIFY_7883 = 50_646_861;
-    uint256 constant HINTED_P384_VERIFY_7883_WITH_CALLDATA = 6_040_809;
     uint256 constant HINTED_MODEXP_FLOOR_DELTA = 300; // EIP-7883 floor 500 - EIP-2565 floor 200
     uint256 constant TX_CAP = 16_777_216;
     uint256 constant EIP170_RUNTIME_LIMIT = 24_576;
@@ -33,10 +29,8 @@ contract RealAttestationBenchTest is Test {
     CertManager certManager;
     NitroValidator validator;
     NitroValidatorParseHarness parser;
-    CertManagerHinted hintedCertManager;
-    NitroValidatorHinted hintedValidator;
     P384Verifier p384Verifier;
-    P384HintCollectorBench hintCollector;
+    P384HintCollector hintCollector;
 
     struct SequenceSummary {
         ICertManager.VerifiedCert leaf;
@@ -53,149 +47,14 @@ contract RealAttestationBenchTest is Test {
 
     function setUp() public {
         vm.warp(1767472867); // 2026-01-03T20:41:07Z, matching the attestation timestamp.
-        certManager = new CertManager();
-        validator = new NitroValidator(certManager);
-        parser = new NitroValidatorParseHarness(certManager);
         p384Verifier = new P384Verifier();
-        hintedCertManager = new CertManagerHinted(p384Verifier);
-        hintedValidator = new NitroValidatorHinted(hintedCertManager, p384Verifier);
-        hintCollector = new P384HintCollectorBench();
+        certManager = new CertManager(p384Verifier);
+        validator = new NitroValidator(certManager, p384Verifier);
+        parser = new NitroValidatorParseHarness(certManager, p384Verifier);
+        hintCollector = new P384HintCollector();
     }
 
-    function test_RealAttestationBaseline() public {
-        bytes memory attestation = _decodeBase64(_realAttestationB64());
-        attestation = _repairMissingPublicKeyBytes(attestation);
-
-        uint256 g0 = gasleft();
-        (bytes memory attestationTbs, bytes memory signature) = validator.decodeAttestationTbs(attestation);
-        uint256 decodeGas = g0 - gasleft();
-
-        g0 = gasleft();
-        validator.validateAttestation(attestationTbs, signature);
-        uint256 coldValidateGas = g0 - gasleft();
-
-        g0 = gasleft();
-        validator.validateAttestation(attestationTbs, signature);
-        uint256 cachedValidateGas = g0 - gasleft();
-        uint256 cachedPostFusakaUnoptimized = cachedValidateGas + (P384_VERIFY_7883 - P384_VERIFY_2565);
-        uint256 cachedPostFusakaHinted = cachedValidateGas - P384_VERIFY_2565 + HINTED_P384_VERIFY_7883_WITH_CALLDATA;
-
-        console.log("==== REAL ATTESTATION BASELINE ====");
-        console.log("attestation bytes                 :", attestation.length);
-        console.log("attestationTbs bytes              :", attestationTbs.length);
-        console.log("signature bytes                   :", signature.length);
-        console.log("decodeAttestationTbs gas          :", decodeGas);
-        console.log("validateAttestation gas (cold)    :", coldValidateGas);
-        console.log("validateAttestation gas (cached)  :", cachedValidateGas);
-        console.log("cached post-Fusaka unoptimized    :", cachedPostFusakaUnoptimized);
-        console.log("cached post-Fusaka hinted+calldata:", cachedPostFusakaHinted);
-        console.log("cached hinted fits tx cap?        :", cachedPostFusakaHinted <= TX_CAP ? 1 : 0);
-    }
-
-    function test_RealAttestationPerCertSplitProjection() public {
-        bytes memory attestation = _repairMissingPublicKeyBytes(_decodeBase64(_realAttestationB64()));
-        (bytes memory attestationTbs,) = validator.decodeAttestationTbs(attestation);
-        NitroValidator.Ptrs memory ptrs = parser.parseAttestation(attestationTbs);
-
-        bytes32 parentHash;
-        console.log("==== REAL ATTESTATION PER-CERT SPLIT ====");
-        for (uint256 i = 0; i < ptrs.cabundle.length; ++i) {
-            bytes memory caCert = attestationTbs.slice(ptrs.cabundle[i]);
-            uint256 certG0 = gasleft();
-            parentHash = certManager.verifyCACert(caCert, parentHash);
-            uint256 certGas = certG0 - gasleft();
-            uint256 projected = i == 0 ? certGas : _projectOneHintedP384(certGas);
-            console.log("cabundle index                    :", i);
-            console.log("  current gas                     :", certGas);
-            console.log("  projected hinted post-Fusaka    :", projected);
-            console.log("  fits tx cap?                    :", projected <= TX_CAP ? 1 : 0);
-            assertLe(projected, TX_CAP);
-        }
-
-        bytes memory clientCert = attestationTbs.slice(ptrs.cert);
-        uint256 clientG0 = gasleft();
-        certManager.verifyClientCert(clientCert, parentHash);
-        uint256 clientGas = clientG0 - gasleft();
-        uint256 clientProjected = _projectOneHintedP384(clientGas);
-        console.log("client cert");
-        console.log("  current gas                     :", clientGas);
-        console.log("  projected hinted post-Fusaka    :", clientProjected);
-        console.log("  fits tx cap?                    :", clientProjected <= TX_CAP ? 1 : 0);
-        assertLe(clientProjected, TX_CAP);
-    }
-
-    function test_ProductionShapedHintedPerCertSplit() public {
-        bytes memory attestation = _repairMissingPublicKeyBytes(_decodeBase64(_realAttestationB64()));
-        (bytes memory attestationTbs,) = validator.decodeAttestationTbs(attestation);
-        NitroValidator.Ptrs memory ptrs = parser.parseAttestation(attestationTbs);
-
-        bytes32 parentHash;
-        bytes memory parentPubKey;
-        console.log("==== PRODUCTION-SHAPED HINTED PER-CERT SPLIT ====");
-        for (uint256 i = 0; i < ptrs.cabundle.length; ++i) {
-            bytes memory caCert = attestationTbs.slice(ptrs.cabundle[i]);
-            bytes memory hints;
-            uint256 hintedOtherCalls;
-            if (i != 0) {
-                parentPubKey = hintedCertManager.loadVerified(parentHash).pubKey;
-                (hints, hintedOtherCalls) = hintCollector.collectCertSignatureProfile(caCert, parentPubKey);
-            }
-
-            uint256 certG0 = gasleft();
-            parentHash = hintedCertManager.verifyCACertWithHints(caCert, parentHash, hints);
-            uint256 certGas = certG0 - gasleft();
-            uint256 projected = _projectHintedMeasured(certGas, hints.length, hintedOtherCalls);
-            console.log("cabundle index                    :", i);
-            console.log("  current hinted gas              :", certGas);
-            console.log("  inverse hint bytes              :", hints.length);
-            console.log("  hinted MODEXP floor calls       :", hintedOtherCalls);
-            console.log("  projected hinted post-Fusaka    :", projected);
-            console.log("  fits tx cap?                    :", projected <= TX_CAP ? 1 : 0);
-            assertLe(projected, TX_CAP);
-        }
-
-        bytes memory clientCert = attestationTbs.slice(ptrs.cert);
-        parentPubKey = hintedCertManager.loadVerified(parentHash).pubKey;
-        (bytes memory clientHints, uint256 clientHintedOtherCalls) =
-            hintCollector.collectCertSignatureProfile(clientCert, parentPubKey);
-
-        uint256 clientG0 = gasleft();
-        hintedCertManager.verifyClientCertWithHints(clientCert, parentHash, clientHints);
-        uint256 clientGas = clientG0 - gasleft();
-        uint256 clientProjected = _projectHintedMeasured(clientGas, clientHints.length, clientHintedOtherCalls);
-        console.log("client cert");
-        console.log("  current hinted gas              :", clientGas);
-        console.log("  inverse hint bytes              :", clientHints.length);
-        console.log("  hinted MODEXP floor calls       :", clientHintedOtherCalls);
-        console.log("  projected hinted post-Fusaka    :", clientProjected);
-        console.log("  fits tx cap?                    :", clientProjected <= TX_CAP ? 1 : 0);
-        assertLe(clientProjected, TX_CAP);
-    }
-
-    function test_ProductionShapedHintedCachedAttestation() public {
-        bytes memory attestation = _repairMissingPublicKeyBytes(_decodeBase64(_realAttestationB64()));
-        (bytes memory attestationTbs, bytes memory signature) = validator.decodeAttestationTbs(attestation);
-        ICertManager.VerifiedCert memory leaf = _cacheCertBundleWithHints(attestationTbs);
-
-        bytes memory hash = Sha2Ext.sha384(attestationTbs, 0, attestationTbs.length);
-        (bytes memory attestationHints, uint256 hintedOtherCalls) =
-            hintCollector.collectVerifyProfile(hash, signature, leaf.pubKey);
-
-        uint256 g0 = gasleft();
-        hintedValidator.validateAttestationWithHints(attestationTbs, signature, attestationHints);
-        uint256 hintedGas = g0 - gasleft();
-        uint256 projected = _projectHintedMeasured(hintedGas, attestationHints.length, hintedOtherCalls);
-
-        console.log("==== PRODUCTION-SHAPED HINTED CACHED ATTESTATION ====");
-        console.log("current hinted cached gas         :", hintedGas);
-        console.log("inverse hint bytes                :", attestationHints.length);
-        console.log("hinted MODEXP floor calls         :", hintedOtherCalls);
-        console.log("projected hinted post-Fusaka      :", projected);
-        console.log("fits tx cap?                      :", projected <= TX_CAP ? 1 : 0);
-        assertLe(projected, TX_CAP);
-    }
-
-    function test_ProductionShapedHintedAttestationRejectsSurplusHint() public {
+    function test_HintedAttestationRejectsSurplusHint() public {
         bytes memory attestation = _repairMissingPublicKeyBytes(_decodeBase64(_realAttestationB64()));
         (bytes memory attestationTbs, bytes memory signature) = validator.decodeAttestationTbs(attestation);
         ICertManager.VerifiedCert memory leaf = _cacheCertBundleWithHints(attestationTbs);
@@ -205,10 +64,10 @@ contract RealAttestationBenchTest is Test {
             abi.encodePacked(hintCollector.collectVerifyHints(hash, signature, leaf.pubKey), bytes1(0x00));
 
         vm.expectRevert("unused inverse hints");
-        hintedValidator.validateAttestationWithHints(attestationTbs, signature, attestationHints);
+        validator.validateAttestationWithHints(attestationTbs, signature, attestationHints);
     }
 
-    function test_008_ProductionCandidateRejectsMutatedCertHint() public {
+    function test_HintedCACertRejectsMutatedHint() public {
         bytes memory attestation = _repairMissingPublicKeyBytes(_decodeBase64(_realAttestationB64()));
         (bytes memory attestationTbs,) = validator.decodeAttestationTbs(attestation);
         NitroValidator.Ptrs memory ptrs = parser.parseAttestation(attestationTbs);
@@ -217,10 +76,10 @@ contract RealAttestationBenchTest is Test {
         hints[10] = bytes1(uint8(hints[10]) ^ 1);
 
         vm.expectRevert("bad inverse hint");
-        hintedCertManager.verifyCACertWithHints(caCert, parentHash, hints);
+        certManager.verifyCACertWithHints(caCert, parentHash, hints);
     }
 
-    function test_008_ProductionCandidateRejectsTruncatedCertHint() public {
+    function test_HintedCACertRejectsTruncatedHint() public {
         bytes memory attestation = _repairMissingPublicKeyBytes(_decodeBase64(_realAttestationB64()));
         (bytes memory attestationTbs,) = validator.decodeAttestationTbs(attestation);
         NitroValidator.Ptrs memory ptrs = parser.parseAttestation(attestationTbs);
@@ -231,56 +90,56 @@ contract RealAttestationBenchTest is Test {
         }
 
         vm.expectRevert("inverse hint underflow");
-        hintedCertManager.verifyCACertWithHints(caCert, parentHash, hints);
+        certManager.verifyCACertWithHints(caCert, parentHash, hints);
     }
 
-    function test_008_ProductionCandidateRejectsWrongParentHash() public {
+    function test_HintedCACertRejectsWrongParentHash() public {
         bytes memory attestation = _repairMissingPublicKeyBytes(_decodeBase64(_realAttestationB64()));
         (bytes memory attestationTbs,) = validator.decodeAttestationTbs(attestation);
         NitroValidator.Ptrs memory ptrs = parser.parseAttestation(attestationTbs);
         bytes memory caCert = attestationTbs.slice(ptrs.cabundle[1]);
 
         vm.expectRevert("parent cert unverified");
-        hintedCertManager.verifyCACertWithHints(caCert, bytes32(0), "");
+        certManager.verifyCACertWithHints(caCert, bytes32(0), "");
     }
 
-    function test_008_ProductionCandidateRejectsExpiredCachedCert() public {
+    function test_HintedCACertRejectsExpiredCachedCert() public {
         bytes memory attestation = _repairMissingPublicKeyBytes(_decodeBase64(_realAttestationB64()));
         (bytes memory attestationTbs,) = validator.decodeAttestationTbs(attestation);
         NitroValidator.Ptrs memory ptrs = parser.parseAttestation(attestationTbs);
         (bytes memory caCert, bytes32 parentHash, bytes memory parentPubKey) = _firstNonRootCA(attestationTbs, ptrs);
         bytes memory hints = hintCollector.collectCertSignatureHints(caCert, parentPubKey);
-        hintedCertManager.verifyCACertWithHints(caCert, parentHash, hints);
+        certManager.verifyCACertWithHints(caCert, parentHash, hints);
 
         vm.warp(1768953600); // 2026-01-21T00:00:00Z, after this fixture's first non-root CA expiry.
 
         vm.expectRevert("cert expired");
-        hintedCertManager.verifyCACertWithHints(caCert, parentHash, "");
+        certManager.verifyCACertWithHints(caCert, parentHash, "");
     }
 
-    function test_008_ProductionCandidateRejectsCachedRoleMismatch() public {
+    function test_HintedCACertRejectsCachedRoleMismatch() public {
         bytes memory attestation = _repairMissingPublicKeyBytes(_decodeBase64(_realAttestationB64()));
         (bytes memory attestationTbs,) = validator.decodeAttestationTbs(attestation);
         NitroValidator.Ptrs memory ptrs = parser.parseAttestation(attestationTbs);
         (bytes memory caCert, bytes32 parentHash, bytes memory parentPubKey) = _firstNonRootCA(attestationTbs, ptrs);
         bytes memory hints = hintCollector.collectCertSignatureHints(caCert, parentPubKey);
-        hintedCertManager.verifyCACertWithHints(caCert, parentHash, hints);
+        certManager.verifyCACertWithHints(caCert, parentHash, hints);
 
         vm.expectRevert("cert is not a CA");
-        hintedCertManager.verifyClientCertWithHints(caCert, parentHash, "");
+        certManager.verifyClientCertWithHints(caCert, parentHash, "");
     }
 
-    function test_008_ProductionCandidateValidateRequiresWarmCache() public {
+    function test_HintedValidationRequiresWarmCache() public {
         bytes memory attestation = _repairMissingPublicKeyBytes(_decodeBase64(_realAttestationB64()));
         (bytes memory attestationTbs, bytes memory signature) = validator.decodeAttestationTbs(attestation);
-        CertManagerHinted freshCertManager = new CertManagerHinted(p384Verifier);
-        NitroValidatorHinted freshValidator = new NitroValidatorHinted(freshCertManager, p384Verifier);
+        CertManager freshCertManager = new CertManager(p384Verifier);
+        NitroValidator freshValidator = new NitroValidator(freshCertManager, p384Verifier);
 
         vm.expectRevert("inverse hint underflow");
         freshValidator.validateAttestationWithHints(attestationTbs, signature, "");
     }
 
-    function test_008_ProductionCandidateRejectsInvalidFinalSignature() public {
+    function test_HintedValidationRejectsInvalidFinalSignature() public {
         bytes memory attestation = _repairMissingPublicKeyBytes(_decodeBase64(_realAttestationB64()));
         (bytes memory attestationTbs, bytes memory signature) = validator.decodeAttestationTbs(attestation);
         ICertManager.VerifiedCert memory leaf = _cacheCertBundleWithHints(attestationTbs);
@@ -289,31 +148,34 @@ contract RealAttestationBenchTest is Test {
         signature[0] = bytes1(uint8(signature[0]) ^ 1);
 
         vm.expectRevert();
-        hintedValidator.validateAttestationWithHints(attestationTbs, signature, attestationHints);
+        validator.validateAttestationWithHints(attestationTbs, signature, attestationHints);
     }
 
-    function test_009_DeployableHintedContractsFitEIP170() public view {
-        console.log("==== 009 DEPLOYABLE CONTRACT SIZES ====");
+    function test_DeployableContractsFitEIP170() public view {
+        console.log("==== DEPLOYABLE CONTRACT SIZES ====");
         console.log("P384Verifier runtime bytes        :", address(p384Verifier).code.length);
-        console.log("CertManagerHinted runtime bytes   :", address(hintedCertManager).code.length);
-        console.log("NitroValidatorHinted runtime bytes:", address(hintedValidator).code.length);
+        console.log("CertManager runtime bytes         :", address(certManager).code.length);
+        console.log("NitroValidator runtime bytes      :", address(validator).code.length);
         assertLe(address(p384Verifier).code.length, EIP170_RUNTIME_LIMIT);
-        assertLe(address(hintedCertManager).code.length, EIP170_RUNTIME_LIMIT);
-        assertLe(address(hintedValidator).code.length, EIP170_RUNTIME_LIMIT);
+        assertLe(address(certManager).code.length, EIP170_RUNTIME_LIMIT);
+        assertLe(address(validator).code.length, EIP170_RUNTIME_LIMIT);
     }
 
-    function test_009_DeployableCertManagerDisablesUnhintedEntrypoints() public {
+    function test_DeployableCertManagerDisablesUnhintedEntrypoints() public {
         vm.expectRevert("use hinted cert verification");
-        hintedCertManager.verifyCACert("", bytes32(0));
+        certManager.verifyCACert("", bytes32(0));
 
         vm.expectRevert("use hinted cert verification");
-        hintedCertManager.verifyClientCert("", bytes32(0));
+        certManager.verifyClientCert("", bytes32(0));
+
+        vm.expectRevert("use hinted attestation verification");
+        validator.validateAttestation("", "");
     }
 
-    function test_010_OffchainWitnessGeneratorMatchesSolidityCollector() public {
+    function test_OffchainWitnessGeneratorMatchesSolidityCollector() public {
         if (!vm.envOr("NITRO_RUN_FFI", false)) {
-            console.log("==== 010 OFFCHAIN WITNESS GENERATOR ====");
-            console.log("skipped; rerun with NITRO_RUN_FFI=true forge test --ffi --match-test test_010");
+            console.log("==== OFFCHAIN WITNESS GENERATOR ====");
+            console.log("skipped; rerun with NITRO_RUN_FFI=true forge test --ffi --match-test test_Offchain");
             return;
         }
 
@@ -323,7 +185,7 @@ contract RealAttestationBenchTest is Test {
 
         bytes memory rootCert = attestationTbs.slice(ptrs.cabundle[0]);
         bytes32 parentHash = keccak256(rootCert);
-        bytes memory parentPubKey = hintedCertManager.loadVerified(parentHash).pubKey;
+        bytes memory parentPubKey = certManager.loadVerified(parentHash).pubKey;
         uint256 signaturesChecked;
 
         for (uint256 i = 1; i < ptrs.cabundle.length; ++i) {
@@ -332,8 +194,8 @@ contract RealAttestationBenchTest is Test {
             bytes memory offchainHints = _ffiCertSignatureHints(caCert, parentPubKey);
             assertEq(offchainHints, expectedHints, "offchain CA cert hints mismatch");
 
-            parentHash = hintedCertManager.verifyCACertWithHints(caCert, parentHash, offchainHints);
-            parentPubKey = hintedCertManager.loadVerified(parentHash).pubKey;
+            parentHash = certManager.verifyCACertWithHints(caCert, parentHash, offchainHints);
+            parentPubKey = certManager.loadVerified(parentHash).pubKey;
             signaturesChecked += 1;
         }
 
@@ -342,22 +204,80 @@ contract RealAttestationBenchTest is Test {
         bytes memory offchainClientHints = _ffiCertSignatureHints(clientCert, parentPubKey);
         assertEq(offchainClientHints, expectedClientHints, "offchain client cert hints mismatch");
         ICertManager.VerifiedCert memory leaf =
-            hintedCertManager.verifyClientCertWithHints(clientCert, parentHash, offchainClientHints);
+            certManager.verifyClientCertWithHints(clientCert, parentHash, offchainClientHints);
         signaturesChecked += 1;
 
         _assertOffchainAttestationHints(attestation, attestationTbs, signature, leaf.pubKey);
         signaturesChecked += 1;
 
-        console.log("==== 010 OFFCHAIN WITNESS GENERATOR ====");
+        console.log("==== OFFCHAIN WITNESS GENERATOR ====");
         console.log("signatures checked                :", signaturesChecked);
     }
 
-    function test_007_FullColdAndWarmHintedSequence() public {
+    function test_OffchainWitnessGeneratorRejectsMalformedInputs() public {
+        if (!vm.envOr("NITRO_RUN_FFI", false)) {
+            console.log("==== OFFCHAIN WITNESS NEGATIVES ====");
+            console.log("skipped; rerun with NITRO_RUN_FFI=true forge test --ffi --match-test test_Offchain");
+            return;
+        }
+
+        bytes memory attestation = _repairMissingPublicKeyBytes(_decodeBase64(_realAttestationB64()));
+        (bytes memory attestationTbs, bytes memory signature) = validator.decodeAttestationTbs(attestation);
+        ICertManager.VerifiedCert memory leaf = _cacheCertBundleWithHints(attestationTbs);
+        bytes memory hash = Sha2Ext.sha384(attestationTbs, 0, attestationTbs.length);
+
+        _assertFfiVerifyRejects(hash, _mutateAt(signature, 0), leaf.pubKey);
+        _assertFfiVerifyRejects(hash, signature, _mutateAt(leaf.pubKey, 0));
+        _assertFfiCertRejects(hex"00", leaf.pubKey);
+        _assertFfiAttestationRejects(hex"00", leaf.pubKey);
+
+        console.log("==== OFFCHAIN WITNESS NEGATIVES ====");
+        console.log("malformed CLI cases checked       :", uint256(4));
+    }
+
+    function test_DemoExpiryGraceAllowsOldFixtureAtBaseSepoliaTime() public {
+        vm.warp(1780458582); // 2026-06-03T03:49:42Z, matching the Base Sepolia demo.
+
+        CertManagerDemo demoCertManager = new CertManagerDemo(p384Verifier, 365 days);
+        NitroValidator demoValidator = new NitroValidator(demoCertManager, p384Verifier);
+
         bytes memory attestation = _repairMissingPublicKeyBytes(_decodeBase64(_realAttestationB64()));
         (bytes memory attestationTbs, bytes memory signature) = validator.decodeAttestationTbs(attestation);
         NitroValidator.Ptrs memory ptrs = parser.parseAttestation(attestationTbs);
 
-        console.log("==== 007 FULL COLD + WARM HINTED SEQUENCE ====");
+        bytes memory rootCert = attestationTbs.slice(ptrs.cabundle[0]);
+        bytes32 parentHash = keccak256(rootCert);
+        ICertManager.VerifiedCert memory parent = demoCertManager.loadVerified(parentHash);
+        assertTrue(parent.pubKey.length > 0, "root must be pinned");
+
+        for (uint256 i = 1; i < ptrs.cabundle.length; ++i) {
+            bytes memory caCert = attestationTbs.slice(ptrs.cabundle[i]);
+            bytes memory hints = hintCollector.collectCertSignatureHints(caCert, parent.pubKey);
+            parentHash = demoCertManager.verifyCACertWithHints(caCert, parentHash, hints);
+            parent = demoCertManager.loadVerified(parentHash);
+        }
+
+        bytes memory clientCert = attestationTbs.slice(ptrs.cert);
+        bytes memory clientHints = hintCollector.collectCertSignatureHints(clientCert, parent.pubKey);
+        ICertManager.VerifiedCert memory leaf =
+            demoCertManager.verifyClientCertWithHints(clientCert, parentHash, clientHints);
+
+        bytes memory attestationHints = hintCollector.collectVerifyHints(
+            Sha2Ext.sha384(attestationTbs, 0, attestationTbs.length), signature, leaf.pubKey
+        );
+        demoValidator.validateAttestationWithHints(attestationTbs, signature, attestationHints);
+
+        console.log("==== DEMO EXPIRY GRACE ====");
+        console.log("base sepolia timestamp           :", block.timestamp);
+        console.log("demo expiry grace seconds        :", uint256(365 days));
+    }
+
+    function test_FullColdAndWarmHintedSequence() public {
+        bytes memory attestation = _repairMissingPublicKeyBytes(_decodeBase64(_realAttestationB64()));
+        (bytes memory attestationTbs, bytes memory signature) = validator.decodeAttestationTbs(attestation);
+        NitroValidator.Ptrs memory ptrs = parser.parseAttestation(attestationTbs);
+
+        console.log("==== FULL COLD + WARM HINTED SEQUENCE ====");
         console.log("cabundle certs                   :", ptrs.cabundle.length);
         console.log("minimum cold tx count            :", ptrs.cabundle.length + 1);
         console.log("warm-cache tx count              :", uint256(1));
@@ -432,10 +352,6 @@ contract RealAttestationBenchTest is Test {
         revert("bad base64 char");
     }
 
-    function _projectOneHintedP384(uint256 currentGas) internal pure returns (uint256) {
-        return currentGas - P384_VERIFY_2565 + HINTED_P384_VERIFY_7883_WITH_CALLDATA;
-    }
-
     function _projectHintedMeasured(uint256 currentHintedGas, uint256 hintBytes, uint256 hintedOtherCalls)
         internal
         pure
@@ -456,7 +372,7 @@ contract RealAttestationBenchTest is Test {
         caCert = attestationTbs.slice(ptrs.cabundle[1]);
         bytes memory rootCert = attestationTbs.slice(ptrs.cabundle[0]);
         parentHash = keccak256(rootCert);
-        parentPubKey = hintedCertManager.loadVerified(parentHash).pubKey;
+        parentPubKey = certManager.loadVerified(parentHash).pubKey;
     }
 
     function _runColdCertCacheSequence(bytes memory attestationTbs, NitroValidator.Ptrs memory ptrs)
@@ -465,7 +381,7 @@ contract RealAttestationBenchTest is Test {
     {
         bytes memory rootCert = attestationTbs.slice(ptrs.cabundle[0]);
         bytes32 parentHash = keccak256(rootCert);
-        ICertManager.VerifiedCert memory parent = hintedCertManager.loadVerified(parentHash);
+        ICertManager.VerifiedCert memory parent = certManager.loadVerified(parentHash);
         assertTrue(parent.pubKey.length > 0, "root must already be cached");
         assertTrue(parent.ca, "root must be cached as CA");
         console.log("root cert hash pinned            :");
@@ -478,9 +394,9 @@ contract RealAttestationBenchTest is Test {
                 hintCollector.collectCertSignatureProfile(caCert, parent.pubKey);
 
             g0 = gasleft();
-            parentHash = hintedCertManager.verifyCACertWithHints(caCert, parentHash, hints);
+            parentHash = certManager.verifyCACertWithHints(caCert, parentHash, hints);
             uint256 currentGas = g0 - gasleft();
-            parent = hintedCertManager.loadVerified(parentHash);
+            parent = certManager.loadVerified(parentHash);
             assertTrue(parent.pubKey.length > 0, "CA cert must be cached");
             assertTrue(parent.ca, "CA cert must be cached as CA");
 
@@ -495,11 +411,11 @@ contract RealAttestationBenchTest is Test {
             hintCollector.collectCertSignatureProfile(clientCert, parent.pubKey);
 
         g0 = gasleft();
-        summary.leaf = hintedCertManager.verifyClientCertWithHints(clientCert, parentHash, clientHints);
+        summary.leaf = certManager.verifyClientCertWithHints(clientCert, parentHash, clientHints);
         uint256 clientCurrentGas = g0 - gasleft();
 
         bytes32 leafHash = keccak256(clientCert);
-        ICertManager.VerifiedCert memory cachedLeaf = hintedCertManager.loadVerified(leafHash);
+        ICertManager.VerifiedCert memory cachedLeaf = certManager.loadVerified(leafHash);
         assertTrue(cachedLeaf.pubKey.length > 0, "client cert must be cached");
         assertFalse(cachedLeaf.ca, "client cert must be cached as client");
 
@@ -527,7 +443,7 @@ contract RealAttestationBenchTest is Test {
         bytes memory attestationHints
     ) internal returns (TxGas memory txGas) {
         uint256 g0 = gasleft();
-        hintedValidator.validateAttestationWithHints(attestationTbs, signature, attestationHints);
+        validator.validateAttestationWithHints(attestationTbs, signature, attestationHints);
         txGas.currentGas = g0 - gasleft();
         txGas.projectedGas = _projectHintedMeasured(txGas.currentGas, hintBytes, hintedOtherCalls);
         _logSequenceTx(txIndex, label, txGas.currentGas, hintBytes, hintedOtherCalls, txGas.projectedGas);
@@ -574,22 +490,22 @@ contract RealAttestationBenchTest is Test {
             bytes memory caCert = attestationTbs.slice(ptrs.cabundle[i]);
             bytes memory hints;
             if (i != 0) {
-                parentPubKey = hintedCertManager.loadVerified(parentHash).pubKey;
+                parentPubKey = certManager.loadVerified(parentHash).pubKey;
                 hints = hintCollector.collectCertSignatureHints(caCert, parentPubKey);
             }
-            parentHash = hintedCertManager.verifyCACertWithHints(caCert, parentHash, hints);
+            parentHash = certManager.verifyCACertWithHints(caCert, parentHash, hints);
         }
 
         bytes memory clientCert = attestationTbs.slice(ptrs.cert);
-        parentPubKey = hintedCertManager.loadVerified(parentHash).pubKey;
+        parentPubKey = certManager.loadVerified(parentHash).pubKey;
         bytes memory clientHints = hintCollector.collectCertSignatureHints(clientCert, parentPubKey);
-        leaf = hintedCertManager.verifyClientCertWithHints(clientCert, parentHash, clientHints);
+        leaf = certManager.verifyClientCertWithHints(clientCert, parentHash, clientHints);
     }
 
     function _ffiCertSignatureHints(bytes memory cert, bytes memory parentPubKey) internal returns (bytes memory) {
         string[] memory command = new string[](7);
         command[0] = "node";
-        command[1] = string.concat(vm.projectRoot(), "/bench/p384_hints.js");
+        command[1] = string.concat(vm.projectRoot(), "/tools/p384_hints.js");
         command[2] = "cert";
         command[3] = "--cert";
         command[4] = vm.toString(cert);
@@ -604,7 +520,7 @@ contract RealAttestationBenchTest is Test {
     {
         string[] memory command = new string[](9);
         command[0] = "node";
-        command[1] = string.concat(vm.projectRoot(), "/bench/p384_hints.js");
+        command[1] = string.concat(vm.projectRoot(), "/tools/p384_hints.js");
         command[2] = "verify";
         command[3] = "--hash";
         command[4] = vm.toString(hash);
@@ -629,20 +545,58 @@ contract RealAttestationBenchTest is Test {
         bytes memory offchainCoseHints = _ffiAttestationHints(attestation, pubKey);
         assertEq(offchainCoseHints, expectedHints, "offchain COSE attestation hints mismatch");
 
-        hintedValidator.validateAttestationWithHints(attestationTbs, signature, offchainHints);
+        validator.validateAttestationWithHints(attestationTbs, signature, offchainHints);
         console.log("final attestation hint bytes      :", offchainHints.length);
     }
 
     function _ffiAttestationHints(bytes memory attestation, bytes memory pubKey) internal returns (bytes memory) {
         string[] memory command = new string[](7);
         command[0] = "node";
-        command[1] = string.concat(vm.projectRoot(), "/bench/p384_hints.js");
+        command[1] = string.concat(vm.projectRoot(), "/tools/p384_hints.js");
         command[2] = "attestation";
         command[3] = "--attestation";
         command[4] = vm.toString(attestation);
         command[5] = "--pubkey";
         command[6] = vm.toString(pubKey);
         return vm.ffi(command);
+    }
+
+    function _assertFfiVerifyRejects(bytes memory hash, bytes memory signature, bytes memory pubKey) internal {
+        vm.expectRevert();
+        this.ffiVerifyHintsForTest(hash, signature, pubKey);
+    }
+
+    function _assertFfiCertRejects(bytes memory cert, bytes memory pubKey) internal {
+        vm.expectRevert();
+        this.ffiCertSignatureHintsForTest(cert, pubKey);
+    }
+
+    function _assertFfiAttestationRejects(bytes memory attestation, bytes memory pubKey) internal {
+        vm.expectRevert();
+        this.ffiAttestationHintsForTest(attestation, pubKey);
+    }
+
+    function ffiVerifyHintsForTest(bytes memory hash, bytes memory signature, bytes memory pubKey)
+        external
+        returns (bytes memory)
+    {
+        return _ffiVerifyHints(hash, signature, pubKey);
+    }
+
+    function ffiCertSignatureHintsForTest(bytes memory cert, bytes memory pubKey) external returns (bytes memory) {
+        return _ffiCertSignatureHints(cert, pubKey);
+    }
+
+    function ffiAttestationHintsForTest(bytes memory attestation, bytes memory pubKey) external returns (bytes memory) {
+        return _ffiAttestationHints(attestation, pubKey);
+    }
+
+    function _mutateAt(bytes memory input, uint256 index) internal pure returns (bytes memory output) {
+        output = new bytes(input.length);
+        for (uint256 i = 0; i < input.length; ++i) {
+            output[i] = input[i];
+        }
+        output[index] = bytes1(uint8(output[index]) ^ 1);
     }
 
     function _repairMissingPublicKeyBytes(bytes memory attestation) internal pure returns (bytes memory repaired) {

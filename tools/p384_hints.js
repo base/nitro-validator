@@ -13,7 +13,9 @@ const GX = hexToBigInt("aa87ca22be8b05378eb1c71ef320ad746e1d3b628ba79b9859f741e0
 const GY = hexToBigInt("3617de4a96262c6f5d9e98bf9292dc29f8f41dbd289a147ce9da3113b5f0b8c00a60b1ce1d7e819d7a431d7c90ea0e5f");
 const MASK_256 = (1n << 256n) - 1n;
 
-main();
+if (require.main === module) {
+  main();
+}
 
 function main() {
   try {
@@ -50,9 +52,9 @@ function main() {
 
 function usage() {
   process.stderr.write(`Usage:
-  node bench/p384_hints.js verify --hash <hex> --signature <hex> --pubkey <hex>
-  node bench/p384_hints.js cert --cert <hex|base64|@file> --pubkey <hex>
-  node bench/p384_hints.js attestation --attestation <hex|base64|@file> --pubkey <hex>
+  node tools/p384_hints.js verify --hash <hex> --signature <hex> --pubkey <hex>
+  node tools/p384_hints.js cert --cert <hex|base64|@file> --pubkey <hex>
+  node tools/p384_hints.js attestation --attestation <hex|base64|@file> --pubkey <hex>
 
 Inputs may be 0x-prefixed hex, base64, or @path. Output is a 0x-prefixed packed
 stream of 48-byte big-endian inverse hints.
@@ -143,6 +145,20 @@ function collectVerifyHints(hashBytes, signatureBytes, pubKeyBytes) {
   }
 
   return ctx.hints;
+}
+
+function collectVerifyHintBytes(hashBytes, signatureBytes, pubKeyBytes) {
+  return Buffer.concat(collectVerifyHints(hashBytes, signatureBytes, pubKeyBytes));
+}
+
+function collectCertSignatureHintBytes(cert, parentPubKey) {
+  const { hash, signature } = parseCertSignature(cert);
+  return collectVerifyHintBytes(hash, signature, parentPubKey);
+}
+
+function collectAttestationHintBytes(attestation, leafPubKey) {
+  const { hash, signature } = parseAttestationSignature(attestation);
+  return collectVerifyHintBytes(hash, signature, leafPubKey);
 }
 
 function isOnCurve(x, y) {
@@ -428,6 +444,38 @@ function parseCertSignature(cert) {
   return { hash, signature: Buffer.concat([r, s]) };
 }
 
+function parseCertPublicKey(cert) {
+  const root = readAsn1(cert, 0);
+  requireTag(root, 0x30, "certificate");
+
+  const tbs = readAsn1(cert, root.contentStart);
+  requireTag(tbs, 0x30, "TBS certificate");
+
+  let ptr = readAsn1(cert, tbs.contentStart);
+  if (ptr.tag === 0xa0) {
+    ptr = readAsn1(cert, ptr.end); // serial number
+  }
+
+  const serial = ptr;
+  const signatureAlgorithm = readAsn1(cert, serial.end);
+  const issuer = readAsn1(cert, signatureAlgorithm.end);
+  const validity = readAsn1(cert, issuer.end);
+  const subject = readAsn1(cert, validity.end);
+  const subjectPublicKeyInfo = readAsn1(cert, subject.end);
+
+  const algorithm = readAsn1(cert, subjectPublicKeyInfo.contentStart);
+  const subjectPublicKey = readAsn1(cert, algorithm.end);
+  requireTag(subjectPublicKey, 0x03, "subject public key bit string");
+  if (cert[subjectPublicKey.contentStart] !== 0x00) {
+    throw new Error("unsupported nonzero public key unused-bits count");
+  }
+  if (subjectPublicKey.contentEnd - subjectPublicKey.contentStart < 97) {
+    throw new Error("subject public key is too short");
+  }
+
+  return cert.subarray(subjectPublicKey.contentEnd - 96, subjectPublicKey.contentEnd);
+}
+
 function parseAsn1Integer(bytes) {
   let value = bytes;
   while (value.length > 0 && value[0] === 0x00) {
@@ -514,7 +562,54 @@ function parseAttestationSignature(attestation) {
   return {
     hash: crypto.createHash("sha384").update(attestationTbs).digest(),
     signature: attestation.subarray(signaturePtr.contentStart, signaturePtr.end),
+    attestationTbs,
+    payload: attestation.subarray(payloadPtr.contentStart, payloadPtr.end),
   };
+}
+
+function parseAttestationPayload(attestation) {
+  const { payload } = parseAttestationSignature(attestation);
+  const root = readCborItem(payload, 0);
+  requireCborMajor(root, 5, "attestation payload");
+
+  const result = {};
+  let offset = root.contentStart;
+  let itemCount = 0n;
+  while (root.indefinite ? payload[offset] !== 0xff : itemCount < root.value) {
+    const key = readCborItem(payload, offset);
+    requireCborMajor(key, 3, "attestation payload key");
+    const keyName = payload.subarray(key.contentStart, key.end).toString("utf8");
+    const value = readCborItem(payload, key.end);
+
+    if (keyName === "certificate") {
+      requireCborMajor(value, 2, "certificate");
+      result.certificate = payload.subarray(value.contentStart, value.end);
+    } else if (keyName === "cabundle") {
+      requireCborMajor(value, 4, "cabundle");
+      result.cabundle = [];
+      let itemOffset = value.contentStart;
+      let cabundleCount = 0n;
+      while (value.indefinite ? payload[itemOffset] !== 0xff : cabundleCount < value.value) {
+        const item = readCborItem(payload, itemOffset);
+        requireCborMajor(item, 2, "cabundle certificate");
+        result.cabundle.push(payload.subarray(item.contentStart, item.end));
+        itemOffset = item.end;
+        cabundleCount++;
+      }
+    }
+
+    offset = value.end;
+    itemCount++;
+  }
+
+  if (!result.certificate) {
+    throw new Error("attestation payload missing certificate");
+  }
+  if (!result.cabundle || result.cabundle.length === 0) {
+    throw new Error("attestation payload missing cabundle");
+  }
+
+  return result;
 }
 
 function readCborItem(bytes, start) {
@@ -524,23 +619,51 @@ function readCborItem(bytes, start) {
   }
   const major = initial >> 5;
   const ai = initial & 0x1f;
-  const { value, headerLength } = readCborValue(bytes, start + 1, ai);
+  const { value, headerLength, indefinite } = readCborValue(bytes, start + 1, ai);
   const contentStart = start + headerLength;
   let end;
 
   if (major === 2 || major === 3) {
+    if (indefinite) {
+      throw new Error("unsupported indefinite CBOR byte/text string");
+    }
     end = contentStart + Number(value);
   } else if (major === 4) {
     end = contentStart;
-    for (let i = 0n; i < value; ++i) {
-      end = readCborItem(bytes, end).end;
+    if (indefinite) {
+      while (bytes[end] !== 0xff) {
+        if (end >= bytes.length) {
+          throw new Error("indefinite CBOR array missing break");
+        }
+        end = readCborItem(bytes, end).end;
+      }
+      end++;
+    } else {
+      for (let i = 0n; i < value; ++i) {
+        end = readCborItem(bytes, end).end;
+      }
     }
   } else if (major === 5) {
     end = contentStart;
-    for (let i = 0n; i < value * 2n; ++i) {
-      end = readCborItem(bytes, end).end;
+    if (indefinite) {
+      while (bytes[end] !== 0xff) {
+        if (end >= bytes.length) {
+          throw new Error("indefinite CBOR map missing break");
+        }
+        const key = readCborItem(bytes, end);
+        const mapValue = readCborItem(bytes, key.end);
+        end = mapValue.end;
+      }
+      end++;
+    } else {
+      for (let i = 0n; i < value * 2n; ++i) {
+        end = readCborItem(bytes, end).end;
+      }
     }
   } else if (major === 0 || major === 1 || major === 6 || major === 7) {
+    if (indefinite) {
+      throw new Error(`unsupported indefinite CBOR major type ${major}`);
+    }
     end = contentStart;
   } else {
     throw new Error(`unsupported CBOR major type ${major}`);
@@ -550,7 +673,7 @@ function readCborItem(bytes, start) {
     throw new Error("CBOR item length out of bounds");
   }
 
-  return { major, ai, value, start, contentStart, end };
+  return { major, ai, value, indefinite, start, contentStart, end };
 }
 
 function readCborValue(bytes, offset, ai) {
@@ -568,6 +691,9 @@ function readCborValue(bytes, offset, ai) {
   }
   if (ai === 27) {
     return { value: readBigUintBE(bytes, offset, 8), headerLength: 9 };
+  }
+  if (ai === 31) {
+    return { value: 0n, headerLength: 1, indefinite: true };
   }
   throw new Error(`unsupported CBOR additional information ${ai}`);
 }
@@ -622,3 +748,14 @@ function bigIntToFixedBuffer(value, length) {
 function hexToBigInt(hex) {
   return BigInt(`0x${hex}`);
 }
+
+module.exports = {
+  collectAttestationHintBytes,
+  collectCertSignatureHintBytes,
+  collectVerifyHintBytes,
+  parseAttestationPayload,
+  parseAttestationSignature,
+  parseCertPublicKey,
+  parseCertSignature,
+  readBytes,
+};
