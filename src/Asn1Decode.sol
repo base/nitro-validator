@@ -165,9 +165,10 @@ library Asn1Decode {
             start++;
             valueLength--;
         }
+        uint256 shift = 48 - valueLength;
         return (
-            uint128(uint256(readBytesN(der, start, 16) >> 128)),
-            uint256(readBytesN(der, start + 16, valueLength - 16) >> (48 - valueLength) * 8)
+            uint128(uint256(readBytesN(der, start, 16 - shift) >> (128 + shift * 8))),
+            uint256(readBytesN(der, start + 16 - shift, 32))
         );
     }
 
