@@ -1,0 +1,226 @@
+diff --git a/contracts/libs/crypto/ECDSA384.sol b/contracts/libs/crypto/ECDSA384.sol
+index 9e43756..053803b 100644
+--- a/contracts/libs/crypto/ECDSA384.sol
++++ b/contracts/libs/crypto/ECDSA384.sol
+@@ -64,6 +64,40 @@ library ECDSA384 {
+         bytes memory signature_,
+         bytes memory pubKey_
+     ) internal view returns (bool) {
++        (bool ok_, ) = _verify(curveParams_, hashedMessage_, signature_, pubKey_, "", false);
++        return ok_;
++    }
++
++    function verifyWithHints(
++        Parameters memory curveParams_,
++        bytes memory hashedMessage_,
++        bytes memory signature_,
++        bytes memory pubKey_,
++        bytes memory inverseHints_
++    ) internal view returns (bool ok_) {
++        uint256 consumed_;
++        (ok_, consumed_) = _verify(curveParams_, hashedMessage_, signature_, pubKey_, inverseHints_, true);
++        require(consumed_ == inverseHints_.length, "unused inverse hints");
++    }
++
++    function verifyWithHintsConsumed(
++        Parameters memory curveParams_,
++        bytes memory hashedMessage_,
++        bytes memory signature_,
++        bytes memory pubKey_,
++        bytes memory inverseHints_
++    ) internal view returns (bool ok_, uint256 consumed_) {
++        return _verify(curveParams_, hashedMessage_, signature_, pubKey_, inverseHints_, true);
++    }
++
++    function _verify(
++        Parameters memory curveParams_,
++        bytes memory hashedMessage_,
++        bytes memory signature_,
++        bytes memory pubKey_,
++        bytes memory inverseHints_,
++        bool useHints_
++    ) private view returns (bool ok_, uint256 consumed_) {
+         unchecked {
+             _Inputs memory inputs_;
+ 
+@@ -80,7 +114,7 @@ library ECDSA384 {
+                 lowSmax: curveParams_.lowSmax.init()
+             });
+ 
+-            uint256 call = U384.initCall(params_.p);
++            uint256 call = useHints_ ? U384.initCallWithHints(params_.p, inverseHints_) : U384.initCall(params_.p);
+ 
+             /// accept s only from the lower part of the curve
+             if (
+@@ -89,11 +123,11 @@ library ECDSA384 {
+                 U384.eqInteger(inputs_.s, 0) ||
+                 U384.cmp(inputs_.s, params_.lowSmax) > 0
+             ) {
+-                return false;
++                return (false, U384.hintCursor(call));
+             }
+ 
+             if (!_isOnCurve(call, params_.p, params_.a, params_.b, inputs_.x, inputs_.y)) {
+-                return false;
++                return (false, U384.hintCursor(call));
+             }
+ 
+             /// allow compatibility with non-384-bit hash functions.
+@@ -144,7 +178,7 @@ library ECDSA384 {
+ 
+             U384.modAssign(call, scalar1, params_.n);
+ 
+-            return U384.eq(scalar1, inputs_.r);
++            return (U384.eq(scalar1, inputs_.r), U384.hintCursor(call));
+         }
+     }
+ 
+@@ -486,11 +520,14 @@ library ECDSA384 {
+ library U384 {
+     uint256 private constant SHORT_ALLOCATION = 64;
+ 
+-    uint256 private constant CALL_ALLOCATION = 4 * 288;
+-
+     uint256 private constant MUL_OFFSET = 288;
+     uint256 private constant EXP_OFFSET = 2 * 288;
+     uint256 private constant INV_OFFSET = 3 * 288;
++    uint256 private constant HINT_DATA_OFFSET = 0x480;
++    uint256 private constant HINT_LENGTH_OFFSET = 0x4A0;
++    uint256 private constant HINT_CURSOR_OFFSET = 0x4C0;
++    uint256 private constant HINT_ENABLED_OFFSET = 0x4E0;
++    uint256 private constant CALL_ALLOCATION = 0x500;
+ 
+     function init(uint256 from_) internal pure returns (uint256 handler_) {
+         unchecked {
+@@ -575,10 +612,32 @@ library U384 {
+                 mstore(add(0x40, call_), 0x40)
+                 mstore(add(0xE0, call_), mload(m_))
+                 mstore(add(0x0100, call_), mload(add(m_, 0x20)))
++
++                mstore(add(handler_, HINT_DATA_OFFSET), 0)
++                mstore(add(handler_, HINT_LENGTH_OFFSET), 0)
++                mstore(add(handler_, HINT_CURSOR_OFFSET), 0)
++                mstore(add(handler_, HINT_ENABLED_OFFSET), 0)
+             }
+         }
+     }
+ 
++    function initCallWithHints(uint256 m_, bytes memory inverseHints_) internal pure returns (uint256 handler_) {
++        handler_ = initCall(m_);
++
++        assembly {
++            mstore(add(handler_, HINT_DATA_OFFSET), add(inverseHints_, 0x20))
++            mstore(add(handler_, HINT_LENGTH_OFFSET), mload(inverseHints_))
++            mstore(add(handler_, HINT_CURSOR_OFFSET), 0)
++            mstore(add(handler_, HINT_ENABLED_OFFSET), 1)
++        }
++    }
++
++    function hintCursor(uint256 call_) internal pure returns (uint256 cursor_) {
++        assembly {
++            cursor_ := mload(add(call_, HINT_CURSOR_OFFSET))
++        }
++    }
++
+     function copy(uint256 handler_) internal pure returns (uint256 handlerCopy_) {
+         unchecked {
+             handlerCopy_ = _allocate(SHORT_ALLOCATION);
+@@ -808,16 +867,28 @@ library U384 {
+     /// @dev Stores modinv into `b_` and moddiv into `a_`.
+     function moddivAssign(uint256 call_, uint256 a_, uint256 b_) internal view {
+         unchecked {
+-            assembly {
+-                call_ := add(call_, INV_OFFSET)
++            uint256 baseCall_ = call_;
++            if (_hintsEnabled(call_)) {
++                uint256 inv_ = _nextInverseHint(call_);
++                uint256 check_ = modmul(call_, b_, inv_);
++                require(eqInteger(check_, 1), "bad inverse hint");
++
++                assembly {
++                    mstore(b_, mload(inv_))
++                    mstore(add(b_, 0x20), mload(add(inv_, 0x20)))
++                }
++            } else {
++                assembly {
++                    call_ := add(call_, INV_OFFSET)
+ 
+-                mstore(add(0x60, call_), mload(b_))
+-                mstore(add(0x80, call_), mload(add(b_, 0x20)))
++                    mstore(add(0x60, call_), mload(b_))
++                    mstore(add(0x80, call_), mload(add(b_, 0x20)))
+ 
+-                pop(staticcall(gas(), 0x5, call_, 0x0120, b_, 0x40))
++                    pop(staticcall(gas(), 0x5, call_, 0x0120, b_, 0x40))
++                }
+             }
+ 
+-            modmulAssign(call_ - INV_OFFSET, a_, b_);
++            modmulAssign(baseCall_, a_, b_);
+         }
+     }
+ 
+@@ -847,6 +918,13 @@ library U384 {
+ 
+     function modinv(uint256 call_, uint256 b_, uint256 m_) internal view returns (uint256 r_) {
+         unchecked {
++            if (_hintsEnabled(call_)) {
++                r_ = _nextInverseHint(call_);
++                uint256 check_ = _modmulWithMod(call_, b_, r_, m_);
++                require(eqInteger(check_, 1), "bad inverse hint");
++                return r_;
++            }
++
+             r_ = _allocate(SHORT_ALLOCATION);
+ 
+             _sub(m_, init(2), call_ + 0xA0);
+@@ -865,6 +943,49 @@ library U384 {
+         }
+     }
+ 
++    function _hintsEnabled(uint256 call_) private pure returns (bool enabled_) {
++        assembly {
++            enabled_ := mload(add(call_, HINT_ENABLED_OFFSET))
++        }
++    }
++
++    function _nextInverseHint(uint256 call_) private pure returns (uint256 r_) {
++        uint256 cursor_;
++        uint256 length_;
++        assembly {
++            cursor_ := mload(add(call_, HINT_CURSOR_OFFSET))
++            length_ := mload(add(call_, HINT_LENGTH_OFFSET))
++        }
++        require(cursor_ + 48 <= length_, "inverse hint underflow");
++
++        r_ = _allocate(SHORT_ALLOCATION);
++
++        assembly {
++            let src_ := add(mload(add(call_, HINT_DATA_OFFSET)), cursor_)
++            mstore(r_, shr(128, mload(src_)))
++            mstore(add(r_, 0x20), mload(add(src_, 0x10)))
++            mstore(add(call_, HINT_CURSOR_OFFSET), add(cursor_, 48))
++        }
++    }
++
++    function _modmulWithMod(uint256 call_, uint256 a_, uint256 b_, uint256 m_) private view returns (uint256 r_) {
++        unchecked {
++            r_ = _allocate(SHORT_ALLOCATION);
++            _mul(a_, b_, call_ + 0x60);
++
++            assembly {
++                mstore(call_, 0x60)
++                mstore(add(0x20, call_), 0x20)
++                mstore(add(0x40, call_), 0x40)
++                mstore(add(0xC0, call_), 0x01)
++                mstore(add(0xE0, call_), mload(m_))
++                mstore(add(0x0100, call_), mload(add(m_, 0x20)))
++
++                pop(staticcall(gas(), 0x5, call_, 0x0120, r_, 0x40))
++            }
++        }
++    }
++
+     function _shl1(uint256 a_, uint256 r_) internal pure {
+         assembly {
+             let a1_ := mload(add(a_, 0x20))

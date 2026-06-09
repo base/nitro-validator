@@ -3,7 +3,7 @@ pragma solidity ^0.8.15;
 
 import {ECDSA384Curve} from "./ECDSA384Curve.sol";
 import {IP384Verifier} from "./IP384Verifier.sol";
-import {ECDSA384} from "@solarity/libs/crypto/ECDSA384.sol";
+import {ECDSA384} from "./vendor/ECDSA384.sol";
 
 contract P384Verifier is IP384Verifier {
     function verifyP384SignatureWithHints(

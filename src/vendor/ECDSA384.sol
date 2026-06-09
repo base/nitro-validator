@@ -1,7 +1,14 @@
 // SPDX-License-Identifier: MIT
+//
+// Vendored from Solarity solidity-lib: https://github.com/dl-solarity/solidity-lib
+//   Base (upstream, unmodified): commit b947757194de6436062c2d68118c0352be84ac4be
+//   Local modification: "Add hinted P384 inverse verification" (verifyWithHints /
+//   verifyWithHintsConsumed and the U384 hint-consumption paths). The exact upstream
+//   diff is committed alongside this file as ECDSA384.hinted.patch for review.
+// Copyright (c) 2023 Solarity. Originally licensed MIT (see header above).
 pragma solidity ^0.8.4;
 
-import {MemoryUtils} from "../../src/vendor/MemoryUtils.sol";
+import {MemoryUtils} from "./MemoryUtils.sol";
 
 /**
  * @notice Cryptography module
@@ -14,9 +21,9 @@ import {MemoryUtils} from "../../src/vendor/MemoryUtils.sol";
  *
  * We also tried using projective coordinates, however, the gas consumption rose to ~9 million gas.
  */
-library ECDSA384HintCollectorLib {
+library ECDSA384 {
     using MemoryUtils for *;
-    using U384HintCollector for *;
+    using U384 for *;
 
     /**
      * @notice 384-bit curve parameters.
@@ -63,8 +70,8 @@ library ECDSA384HintCollectorLib {
         bytes memory hashedMessage_,
         bytes memory signature_,
         bytes memory pubKey_
-    ) internal returns (bool) {
-        (bool ok_,) = _verify(curveParams_, hashedMessage_, signature_, pubKey_, "", false);
+    ) internal view returns (bool) {
+        (bool ok_, ) = _verify(curveParams_, hashedMessage_, signature_, pubKey_, "", false);
         return ok_;
     }
 
@@ -74,7 +81,7 @@ library ECDSA384HintCollectorLib {
         bytes memory signature_,
         bytes memory pubKey_,
         bytes memory inverseHints_
-    ) internal returns (bool ok_) {
+    ) internal view returns (bool ok_) {
         uint256 consumed_;
         (ok_, consumed_) = _verify(curveParams_, hashedMessage_, signature_, pubKey_, inverseHints_, true);
         require(consumed_ == inverseHints_.length, "unused inverse hints");
@@ -86,7 +93,7 @@ library ECDSA384HintCollectorLib {
         bytes memory signature_,
         bytes memory pubKey_,
         bytes memory inverseHints_
-    ) internal returns (bool ok_, uint256 consumed_) {
+    ) internal view returns (bool ok_, uint256 consumed_) {
         return _verify(curveParams_, hashedMessage_, signature_, pubKey_, inverseHints_, true);
     }
 
@@ -97,12 +104,12 @@ library ECDSA384HintCollectorLib {
         bytes memory pubKey_,
         bytes memory inverseHints_,
         bool useHints_
-    ) private returns (bool ok_, uint256 consumed_) {
+    ) private view returns (bool ok_, uint256 consumed_) {
         unchecked {
             _Inputs memory inputs_;
 
-            (inputs_.r, inputs_.s) = U384HintCollector.init2(signature_);
-            (inputs_.x, inputs_.y) = U384HintCollector.init2(pubKey_);
+            (inputs_.r, inputs_.s) = U384.init2(signature_);
+            (inputs_.x, inputs_.y) = U384.init2(pubKey_);
 
             _Parameters memory params_ = _Parameters({
                 a: curveParams_.a.init(),
@@ -114,23 +121,21 @@ library ECDSA384HintCollectorLib {
                 lowSmax: curveParams_.lowSmax.init()
             });
 
-            uint256 call = useHints_
-                ? U384HintCollector.initCallWithHints(params_.p, inverseHints_)
-                : U384HintCollector.initCall(params_.p);
+            uint256 call = useHints_ ? U384.initCallWithHints(params_.p, inverseHints_) : U384.initCall(params_.p);
 
             /// accept s only from the lower part of the curve
             if (
-                U384HintCollector.eqInteger(inputs_.r, 0) || U384HintCollector.cmp(inputs_.r, params_.n) >= 0
-                    || U384HintCollector.eqInteger(inputs_.s, 0)
-                    || U384HintCollector.cmp(inputs_.s, params_.lowSmax) > 0
+                U384.eqInteger(inputs_.r, 0) ||
+                U384.cmp(inputs_.r, params_.n) >= 0 ||
+                U384.eqInteger(inputs_.s, 0) ||
+                U384.cmp(inputs_.s, params_.lowSmax) > 0
             ) {
-                return (false, U384HintCollector.hintCursor(call));
+                return (false, U384.hintCursor(call));
             }
 
             if (!_isOnCurve(call, params_.p, params_.a, params_.b, inputs_.x, inputs_.y)) {
-                return (false, U384HintCollector.hintCursor(call));
+                return (false, U384.hintCursor(call));
             }
-            _checkpoint(0);
 
             /// allow compatibility with non-384-bit hash functions.
             {
@@ -149,61 +154,69 @@ library ECDSA384HintCollectorLib {
                 }
             }
 
-            uint256 scalar1 = U384HintCollector.moddiv(call, hashedMessage_.init(), inputs_.s, params_.n);
-            uint256 scalar2 = U384HintCollector.moddiv(call, inputs_.r, inputs_.s, params_.n);
-            _checkpoint(1);
+            uint256 scalar1 = U384.moddiv(call, hashedMessage_.init(), inputs_.s, params_.n);
+            uint256 scalar2 = U384.moddiv(call, inputs_.r, inputs_.s, params_.n);
 
             {
-                uint256 three = U384HintCollector.init(3);
+                uint256 three = U384.init(3);
 
                 /// We use 6-bit masks where the first 3 bits refer to `scalar1` and the last 3 bits refer to `scalar2`.
                 uint256[2][64] memory points_ = _precomputePointsTable(
-                    call, params_.p, three, params_.a, params_.gx, params_.gy, inputs_.x, inputs_.y
+                    call,
+                    params_.p,
+                    three,
+                    params_.a,
+                    params_.gx,
+                    params_.gy,
+                    inputs_.x,
+                    inputs_.y
                 );
-                _checkpoint(2);
 
-                (scalar1,) = _doubleScalarMultiplication(call, params_.p, three, params_.a, points_, scalar1, scalar2);
-                _checkpoint(3);
+                (scalar1, ) = _doubleScalarMultiplication(
+                    call,
+                    params_.p,
+                    three,
+                    params_.a,
+                    points_,
+                    scalar1,
+                    scalar2
+                );
             }
 
-            U384HintCollector.modAssign(call, scalar1, params_.n);
-            _checkpoint(4);
+            U384.modAssign(call, scalar1, params_.n);
 
-            return (U384HintCollector.eq(scalar1, inputs_.r), U384HintCollector.hintCursor(call));
-        }
-    }
-
-    function _checkpoint(uint256 phase_) private {
-        assembly {
-            tstore(add(10, phase_), tload(0))
-            tstore(add(20, phase_), tload(1))
+            return (U384.eq(scalar1, inputs_.r), U384.hintCursor(call));
         }
     }
 
     /**
      * @dev Check if a point in affine coordinates is on the curve.
      */
-    function _isOnCurve(uint256 call, uint256 p, uint256 a, uint256 b, uint256 x, uint256 y) private returns (bool) {
+    function _isOnCurve(
+        uint256 call,
+        uint256 p,
+        uint256 a,
+        uint256 b,
+        uint256 x,
+        uint256 y
+    ) private view returns (bool) {
         unchecked {
-            if (
-                U384HintCollector.eqInteger(x, 0) || U384HintCollector.eq(x, p) || U384HintCollector.eqInteger(y, 0)
-                    || U384HintCollector.eq(y, p)
-            ) {
+            if (U384.eqInteger(x, 0) || U384.eq(x, p) || U384.eqInteger(y, 0) || U384.eq(y, p)) {
                 return false;
             }
 
-            uint256 LHS = U384HintCollector.modexp(call, y, 2);
-            uint256 RHS = U384HintCollector.modexp(call, x, 3);
+            uint256 LHS = U384.modexp(call, y, 2);
+            uint256 RHS = U384.modexp(call, x, 3);
 
-            if (!U384HintCollector.eqInteger(a, 0)) {
-                RHS = U384HintCollector.modadd(RHS, U384HintCollector.modmul(call, x, a), p); // x^3 + a*x
+            if (!U384.eqInteger(a, 0)) {
+                RHS = U384.modadd(RHS, U384.modmul(call, x, a), p); // x^3 + a*x
             }
 
-            if (!U384HintCollector.eqInteger(b, 0)) {
-                RHS = U384HintCollector.modadd(RHS, b, p); // x^3 + a*x + b
+            if (!U384.eqInteger(b, 0)) {
+                RHS = U384.modadd(RHS, b, p); // x^3 + a*x + b
             }
 
-            return U384HintCollector.eq(LHS, RHS);
+            return U384.eq(LHS, RHS);
         }
     }
 
@@ -218,7 +231,7 @@ library ECDSA384HintCollectorLib {
         uint256[2][64] memory points,
         uint256 scalar1,
         uint256 scalar2
-    ) private returns (uint256 x, uint256 y) {
+    ) private view returns (uint256 x, uint256 y) {
         unchecked {
             uint256 mask_;
             uint256 scalar1Bits_;
@@ -240,10 +253,21 @@ library ECDSA384HintCollectorLib {
             for (uint256 word = 4; word <= 184; word += 3) {
                 (x, y) = _twice3Affine(call, p, three, a, x, y);
 
-                mask_ = (((scalar1Bits_ >> (184 - word)) & 0x07) << 3) | ((scalar2Bits_ >> (184 - word)) & 0x07);
+                mask_ =
+                    (((scalar1Bits_ >> (184 - word)) & 0x07) << 3) |
+                    ((scalar2Bits_ >> (184 - word)) & 0x07);
 
                 if (mask_ != 0) {
-                    (x, y) = _addAffine(call, p, three, a, points[mask_][0], points[mask_][1], x, y);
+                    (x, y) = _addAffine(
+                        call,
+                        p,
+                        three,
+                        a,
+                        points[mask_][0],
+                        points[mask_][1],
+                        x,
+                        y
+                    );
                 }
             }
 
@@ -263,10 +287,21 @@ library ECDSA384HintCollectorLib {
             for (uint256 word = 4; word <= 256; word += 3) {
                 (x, y) = _twice3Affine(call, p, three, a, x, y);
 
-                mask_ = (((scalar1Bits_ >> (256 - word)) & 0x07) << 3) | ((scalar2Bits_ >> (256 - word)) & 0x07);
+                mask_ =
+                    (((scalar1Bits_ >> (256 - word)) & 0x07) << 3) |
+                    ((scalar2Bits_ >> (256 - word)) & 0x07);
 
                 if (mask_ != 0) {
-                    (x, y) = _addAffine(call, p, three, a, points[mask_][0], points[mask_][1], x, y);
+                    (x, y) = _addAffine(
+                        call,
+                        p,
+                        three,
+                        a,
+                        points[mask_][0],
+                        points[mask_][1],
+                        x,
+                        y
+                    );
                 }
             }
         }
@@ -275,104 +310,112 @@ library ECDSA384HintCollectorLib {
     /**
      * @dev Double an elliptic curve point in affine coordinates.
      */
-    function _twiceAffine(uint256 call, uint256 p, uint256 three, uint256 a, uint256 x1, uint256 y1)
-        private
-        returns (uint256 x2, uint256 y2)
-    {
+    function _twiceAffine(
+        uint256 call,
+        uint256 p,
+        uint256 three,
+        uint256 a,
+        uint256 x1,
+        uint256 y1
+    ) private view returns (uint256 x2, uint256 y2) {
         unchecked {
             if (x1 == 0) {
                 return (0, 0);
             }
 
-            if (U384HintCollector.eqInteger(y1, 0)) {
+            if (U384.eqInteger(y1, 0)) {
                 return (0, 0);
             }
 
-            uint256 m1 = U384HintCollector.modexp(call, x1, 2);
-            U384HintCollector.modmulAssign(call, m1, three);
-            U384HintCollector.modaddAssign(m1, a, p);
+            uint256 m1 = U384.modexp(call, x1, 2);
+            U384.modmulAssign(call, m1, three);
+            U384.modaddAssign(m1, a, p);
 
-            uint256 m2 = U384HintCollector.modshl1(y1, p);
-            U384HintCollector.moddivAssign(call, m1, m2);
+            uint256 m2 = U384.modshl1(y1, p);
+            U384.moddivAssign(call, m1, m2);
 
-            x2 = U384HintCollector.modexp(call, m1, 2);
-            U384HintCollector.modsubAssign(x2, x1, p);
-            U384HintCollector.modsubAssign(x2, x1, p);
+            x2 = U384.modexp(call, m1, 2);
+            U384.modsubAssign(x2, x1, p);
+            U384.modsubAssign(x2, x1, p);
 
-            y2 = U384HintCollector.modsub(x1, x2, p);
-            U384HintCollector.modmulAssign(call, y2, m1);
-            U384HintCollector.modsubAssign(y2, y1, p);
+            y2 = U384.modsub(x1, x2, p);
+            U384.modmulAssign(call, y2, m1);
+            U384.modsubAssign(y2, y1, p);
         }
     }
 
     /**
      * @dev Doubles an elliptic curve point 3 times in affine coordinates.
      */
-    function _twice3Affine(uint256 call, uint256 p, uint256 three, uint256 a, uint256 x1, uint256 y1)
-        private
-        returns (uint256 x2, uint256 y2)
-    {
+    function _twice3Affine(
+        uint256 call,
+        uint256 p,
+        uint256 three,
+        uint256 a,
+        uint256 x1,
+        uint256 y1
+    ) private view returns (uint256 x2, uint256 y2) {
         unchecked {
             if (x1 == 0) {
                 return (0, 0);
             }
 
-            if (U384HintCollector.eqInteger(y1, 0)) {
+            if (U384.eqInteger(y1, 0)) {
                 return (0, 0);
             }
 
-            uint256 m1 = U384HintCollector.modexp(call, x1, 2);
-            U384HintCollector.modmulAssign(call, m1, three);
-            U384HintCollector.modaddAssign(m1, a, p);
+            uint256 m1 = U384.modexp(call, x1, 2);
+            U384.modmulAssign(call, m1, three);
+            U384.modaddAssign(m1, a, p);
 
-            uint256 m2 = U384HintCollector.modshl1(y1, p);
-            U384HintCollector.moddivAssign(call, m1, m2);
+            uint256 m2 = U384.modshl1(y1, p);
+            U384.moddivAssign(call, m1, m2);
 
-            x2 = U384HintCollector.modexp(call, m1, 2);
-            U384HintCollector.modsubAssign(x2, x1, p);
-            U384HintCollector.modsubAssign(x2, x1, p);
+            x2 = U384.modexp(call, m1, 2);
+            U384.modsubAssign(x2, x1, p);
+            U384.modsubAssign(x2, x1, p);
 
-            y2 = U384HintCollector.modsub(x1, x2, p);
-            U384HintCollector.modmulAssign(call, y2, m1);
-            U384HintCollector.modsubAssign(y2, y1, p);
+            y2 = U384.modsub(x1, x2, p);
+            U384.modmulAssign(call, y2, m1);
+            U384.modsubAssign(y2, y1, p);
 
-            if (U384HintCollector.eqInteger(y2, 0)) {
+            if (U384.eqInteger(y2, 0)) {
                 return (0, 0);
             }
 
-            U384HintCollector.modexpAssignTo(call, m1, x2, 2);
-            U384HintCollector.modmulAssign(call, m1, three);
-            U384HintCollector.modaddAssign(m1, a, p);
+            U384.modexpAssignTo(call, m1, x2, 2);
+            U384.modmulAssign(call, m1, three);
+            U384.modaddAssign(m1, a, p);
 
-            U384HintCollector.modshl1AssignTo(m2, y2, p);
-            U384HintCollector.moddivAssign(call, m1, m2);
+            U384.modshl1AssignTo(m2, y2, p);
+            U384.moddivAssign(call, m1, m2);
 
-            U384HintCollector.modexpAssignTo(call, x1, m1, 2);
-            U384HintCollector.modsubAssign(x1, x2, p);
-            U384HintCollector.modsubAssign(x1, x2, p);
+            U384.modexpAssignTo(call, x1, m1, 2);
+            U384.modsubAssign(x1, x2, p);
+            U384.modsubAssign(x1, x2, p);
 
-            U384HintCollector.modsubAssignTo(y1, x2, x1, p);
-            U384HintCollector.modmulAssign(call, y1, m1);
-            U384HintCollector.modsubAssign(y1, y2, p);
+            U384.modsubAssignTo(y1, x2, x1, p);
+            U384.modmulAssign(call, y1, m1);
+            U384.modsubAssign(y1, y2, p);
 
-            if (U384HintCollector.eqInteger(y1, 0)) {
+            if (U384.eqInteger(y1, 0)) {
                 return (0, 0);
             }
 
-            U384HintCollector.modexpAssignTo(call, m1, x1, 2);
-            U384HintCollector.modmulAssign(call, m1, three);
-            U384HintCollector.modaddAssign(m1, a, p);
+            U384.modexpAssignTo(call, m1, x1, 2);
+            U384.modmulAssign(call, m1, three);
+            U384.modaddAssign(m1, a, p);
 
-            U384HintCollector.modshl1AssignTo(m2, y1, p);
-            U384HintCollector.moddivAssign(call, m1, m2);
+            U384.modshl1AssignTo(m2, y1, p);
+            U384.moddivAssign(call, m1, m2);
 
-            U384HintCollector.modexpAssignTo(call, x2, m1, 2);
-            U384HintCollector.modsubAssign(x2, x1, p);
-            U384HintCollector.modsubAssign(x2, x1, p);
+            U384.modexpAssignTo(call, x2, m1, 2);
+            U384.modsubAssign(x2, x1, p);
+            U384.modsubAssign(x2, x1, p);
 
-            U384HintCollector.modsubAssignTo(y2, x1, x2, p);
-            U384HintCollector.modmulAssign(call, y2, m1);
-            U384HintCollector.modsubAssign(y2, y1, p);
+            U384.modsubAssignTo(y2, x1, x2, p);
+            U384.modmulAssign(call, y2, m1);
+            U384.modsubAssign(y2, y1, p);
         }
     }
 
@@ -388,7 +431,7 @@ library ECDSA384HintCollectorLib {
         uint256 y1,
         uint256 x2,
         uint256 y2
-    ) private returns (uint256 x3, uint256 y3) {
+    ) private view returns (uint256 x3, uint256 y3) {
         unchecked {
             if (x1 == 0 || x2 == 0) {
                 if (x1 == 0 && x2 == 0) {
@@ -398,26 +441,26 @@ library ECDSA384HintCollectorLib {
                 return x1 == 0 ? (x2.copy(), y2.copy()) : (x1.copy(), y1.copy());
             }
 
-            if (U384HintCollector.eq(x1, x2)) {
-                if (U384HintCollector.eq(y1, y2)) {
+            if (U384.eq(x1, x2)) {
+                if (U384.eq(y1, y2)) {
                     return _twiceAffine(call, p, three, a, x1, y1);
                 }
 
                 return (0, 0);
             }
 
-            uint256 m1 = U384HintCollector.modsub(y1, y2, p);
-            uint256 m2 = U384HintCollector.modsub(x1, x2, p);
+            uint256 m1 = U384.modsub(y1, y2, p);
+            uint256 m2 = U384.modsub(x1, x2, p);
 
-            U384HintCollector.moddivAssign(call, m1, m2);
+            U384.moddivAssign(call, m1, m2);
 
-            x3 = U384HintCollector.modexp(call, m1, 2);
-            U384HintCollector.modsubAssign(x3, x1, p);
-            U384HintCollector.modsubAssign(x3, x2, p);
+            x3 = U384.modexp(call, m1, 2);
+            U384.modsubAssign(x3, x1, p);
+            U384.modsubAssign(x3, x2, p);
 
-            y3 = U384HintCollector.modsub(x1, x3, p);
-            U384HintCollector.modmulAssign(call, y3, m1);
-            U384HintCollector.modsubAssign(y3, y1, p);
+            y3 = U384.modsub(x1, x3, p);
+            U384.modmulAssign(call, y3, m1);
+            U384.modsubAssign(y3, y1, p);
         }
     }
 
@@ -430,7 +473,7 @@ library ECDSA384HintCollectorLib {
         uint256 gy,
         uint256 hx,
         uint256 hy
-    ) private returns (uint256[2][64] memory points_) {
+    ) private view returns (uint256[2][64] memory points_) {
         unchecked {
             (points_[0x01][0], points_[0x01][1]) = (hx.copy(), hy.copy());
             (points_[0x08][0], points_[0x08][1]) = (gx.copy(), gy.copy());
@@ -446,13 +489,29 @@ library ECDSA384HintCollectorLib {
                     if (i != 0) {
                         uint256 maskFrom = ((i - 1) << 3) | j;
 
-                        (points_[maskTo][0], points_[maskTo][1]) =
-                            _addAffine(call, p, three, a, points_[maskFrom][0], points_[maskFrom][1], gx, gy);
+                        (points_[maskTo][0], points_[maskTo][1]) = _addAffine(
+                            call,
+                            p,
+                            three,
+                            a,
+                            points_[maskFrom][0],
+                            points_[maskFrom][1],
+                            gx,
+                            gy
+                        );
                     } else {
                         uint256 maskFrom = (i << 3) | (j - 1);
 
-                        (points_[maskTo][0], points_[maskTo][1]) =
-                            _addAffine(call, p, three, a, points_[maskFrom][0], points_[maskFrom][1], hx, hy);
+                        (points_[maskTo][0], points_[maskTo][1]) = _addAffine(
+                            call,
+                            p,
+                            three,
+                            a,
+                            points_[maskFrom][0],
+                            points_[maskFrom][1],
+                            hx,
+                            hy
+                        );
                     }
                 }
             }
@@ -465,7 +524,7 @@ library ECDSA384HintCollectorLib {
  *
  * Should not be used outside of this file.
  */
-library U384HintCollector {
+library U384 {
     uint256 private constant SHORT_ALLOCATION = 64;
 
     uint256 private constant MUL_OFFSET = 288;
@@ -477,7 +536,7 @@ library U384HintCollector {
     uint256 private constant HINT_ENABLED_OFFSET = 0x4E0;
     uint256 private constant CALL_ALLOCATION = 0x500;
 
-    function init(uint256 from_) internal returns (uint256 handler_) {
+    function init(uint256 from_) internal pure returns (uint256 handler_) {
         unchecked {
             handler_ = _allocate(SHORT_ALLOCATION);
 
@@ -490,7 +549,7 @@ library U384HintCollector {
         }
     }
 
-    function init(bytes memory from_) internal returns (uint256 handler_) {
+    function init(bytes memory from_) internal pure returns (uint256 handler_) {
         unchecked {
             require(from_.length == 48, "U384: not 384");
 
@@ -506,7 +565,9 @@ library U384HintCollector {
         }
     }
 
-    function init2(bytes memory from2_) internal returns (uint256 handler1_, uint256 handler2_) {
+    function init2(
+        bytes memory from2_
+    ) internal pure returns (uint256 handler1_, uint256 handler2_) {
         unchecked {
             require(from2_.length == 96, "U384: not 768");
 
@@ -527,7 +588,7 @@ library U384HintCollector {
         }
     }
 
-    function initCall(uint256 m_) internal returns (uint256 handler_) {
+    function initCall(uint256 m_) internal pure returns (uint256 handler_) {
         unchecked {
             handler_ = _allocate(CALL_ALLOCATION);
 
@@ -567,7 +628,7 @@ library U384HintCollector {
         }
     }
 
-    function initCallWithHints(uint256 m_, bytes memory inverseHints_) internal returns (uint256 handler_) {
+    function initCallWithHints(uint256 m_, bytes memory inverseHints_) internal pure returns (uint256 handler_) {
         handler_ = initCall(m_);
 
         assembly {
@@ -578,13 +639,13 @@ library U384HintCollector {
         }
     }
 
-    function hintCursor(uint256 call_) internal returns (uint256 cursor_) {
+    function hintCursor(uint256 call_) internal pure returns (uint256 cursor_) {
         assembly {
             cursor_ := mload(add(call_, HINT_CURSOR_OFFSET))
         }
     }
 
-    function copy(uint256 handler_) internal returns (uint256 handlerCopy_) {
+    function copy(uint256 handler_) internal pure returns (uint256 handlerCopy_) {
         unchecked {
             handlerCopy_ = _allocate(SHORT_ALLOCATION);
 
@@ -597,19 +658,19 @@ library U384HintCollector {
         }
     }
 
-    function eq(uint256 a_, uint256 b_) internal returns (bool eq_) {
+    function eq(uint256 a_, uint256 b_) internal pure returns (bool eq_) {
         assembly {
             eq_ := and(eq(mload(a_), mload(b_)), eq(mload(add(a_, 0x20)), mload(add(b_, 0x20))))
         }
     }
 
-    function eqInteger(uint256 a_, uint256 bInteger_) internal returns (bool eq_) {
+    function eqInteger(uint256 a_, uint256 bInteger_) internal pure returns (bool eq_) {
         assembly {
             eq_ := and(eq(mload(a_), 0), eq(mload(add(a_, 0x20)), bInteger_))
         }
     }
 
-    function cmp(uint256 a_, uint256 b_) internal returns (int256 cmp_) {
+    function cmp(uint256 a_, uint256 b_) internal pure returns (int256 cmp_) {
         unchecked {
             uint256 aWord_;
             uint256 bWord_;
@@ -642,7 +703,7 @@ library U384HintCollector {
         }
     }
 
-    function modAssign(uint256 call_, uint256 a_, uint256 m_) internal {
+    function modAssign(uint256 call_, uint256 a_, uint256 m_) internal view {
         assembly {
             mstore(call_, 0x40)
             mstore(add(0x20, call_), 0x20)
@@ -654,11 +715,14 @@ library U384HintCollector {
             mstore(add(0xE0, call_), mload(add(m_, 0x20)))
 
             pop(staticcall(gas(), 0x5, call_, 0x0100, a_, 0x40))
-            tstore(1, add(tload(1), 1))
         }
     }
 
-    function modexp(uint256 call_, uint256 b_, uint256 eInteger_) internal returns (uint256 r_) {
+    function modexp(
+        uint256 call_,
+        uint256 b_,
+        uint256 eInteger_
+    ) internal view returns (uint256 r_) {
         unchecked {
             r_ = _allocate(SHORT_ALLOCATION);
 
@@ -670,14 +734,18 @@ library U384HintCollector {
                 mstore(add(0xA0, call_), eInteger_)
 
                 pop(staticcall(gas(), 0x5, call_, 0x0100, r_, 0x40))
-                tstore(1, add(tload(1), 1))
             }
 
             return r_;
         }
     }
 
-    function modexpAssignTo(uint256 call_, uint256 to_, uint256 b_, uint256 eInteger_) internal {
+    function modexpAssignTo(
+        uint256 call_,
+        uint256 to_,
+        uint256 b_,
+        uint256 eInteger_
+    ) internal view {
         assembly {
             call_ := add(call_, EXP_OFFSET)
 
@@ -686,11 +754,10 @@ library U384HintCollector {
             mstore(add(0xA0, call_), eInteger_)
 
             pop(staticcall(gas(), 0x5, call_, 0x0100, to_, 0x40))
-            tstore(1, add(tload(1), 1))
         }
     }
 
-    function modadd(uint256 a_, uint256 b_, uint256 m_) internal returns (uint256 r_) {
+    function modadd(uint256 a_, uint256 b_, uint256 m_) internal pure returns (uint256 r_) {
         unchecked {
             r_ = _allocate(SHORT_ALLOCATION);
 
@@ -704,7 +771,7 @@ library U384HintCollector {
         }
     }
 
-    function modaddAssign(uint256 a_, uint256 b_, uint256 m_) internal {
+    function modaddAssign(uint256 a_, uint256 b_, uint256 m_) internal pure {
         unchecked {
             _addTo(a_, b_);
 
@@ -714,7 +781,7 @@ library U384HintCollector {
         }
     }
 
-    function modmul(uint256 call_, uint256 a_, uint256 b_) internal returns (uint256 r_) {
+    function modmul(uint256 call_, uint256 a_, uint256 b_) internal view returns (uint256 r_) {
         unchecked {
             r_ = _allocate(SHORT_ALLOCATION);
 
@@ -724,14 +791,13 @@ library U384HintCollector {
                 call_ := add(call_, MUL_OFFSET)
 
                 pop(staticcall(gas(), 0x5, call_, 0x0120, r_, 0x40))
-                tstore(1, add(tload(1), 1))
             }
 
             return r_;
         }
     }
 
-    function modmulAssign(uint256 call_, uint256 a_, uint256 b_) internal {
+    function modmulAssign(uint256 call_, uint256 a_, uint256 b_) internal view {
         unchecked {
             _mul(a_, b_, call_ + MUL_OFFSET + 0x60);
 
@@ -739,12 +805,11 @@ library U384HintCollector {
                 call_ := add(call_, MUL_OFFSET)
 
                 pop(staticcall(gas(), 0x5, call_, 0x0120, a_, 0x40))
-                tstore(1, add(tload(1), 1))
             }
         }
     }
 
-    function modsub(uint256 a_, uint256 b_, uint256 m_) internal returns (uint256 r_) {
+    function modsub(uint256 a_, uint256 b_, uint256 m_) internal pure returns (uint256 r_) {
         unchecked {
             r_ = _allocate(SHORT_ALLOCATION);
 
@@ -758,7 +823,7 @@ library U384HintCollector {
         }
     }
 
-    function modsubAssign(uint256 a_, uint256 b_, uint256 m_) internal {
+    function modsubAssign(uint256 a_, uint256 b_, uint256 m_) internal pure {
         unchecked {
             if (cmp(a_, b_) >= 0) {
                 _subFrom(a_, b_);
@@ -770,7 +835,7 @@ library U384HintCollector {
         }
     }
 
-    function modsubAssignTo(uint256 to_, uint256 a_, uint256 b_, uint256 m_) internal {
+    function modsubAssignTo(uint256 to_, uint256 a_, uint256 b_, uint256 m_) internal pure {
         unchecked {
             if (cmp(a_, b_) >= 0) {
                 _sub(a_, b_, to_);
@@ -782,7 +847,7 @@ library U384HintCollector {
         }
     }
 
-    function modshl1(uint256 a_, uint256 m_) internal returns (uint256 r_) {
+    function modshl1(uint256 a_, uint256 m_) internal pure returns (uint256 r_) {
         unchecked {
             r_ = _allocate(SHORT_ALLOCATION);
 
@@ -796,7 +861,7 @@ library U384HintCollector {
         }
     }
 
-    function modshl1AssignTo(uint256 to_, uint256 a_, uint256 m_) internal {
+    function modshl1AssignTo(uint256 to_, uint256 a_, uint256 m_) internal pure {
         unchecked {
             _shl1(a_, to_);
 
@@ -807,7 +872,7 @@ library U384HintCollector {
     }
 
     /// @dev Stores modinv into `b_` and moddiv into `a_`.
-    function moddivAssign(uint256 call_, uint256 a_, uint256 b_) internal {
+    function moddivAssign(uint256 call_, uint256 a_, uint256 b_) internal view {
         unchecked {
             uint256 baseCall_ = call_;
             if (_hintsEnabled(call_)) {
@@ -827,16 +892,19 @@ library U384HintCollector {
                     mstore(add(0x80, call_), mload(add(b_, 0x20)))
 
                     pop(staticcall(gas(), 0x5, call_, 0x0120, b_, 0x40))
-                    tstore(0, add(tload(0), 1))
                 }
-                _collectInverse(b_);
             }
 
             modmulAssign(baseCall_, a_, b_);
         }
     }
 
-    function moddiv(uint256 call_, uint256 a_, uint256 b_, uint256 m_) internal returns (uint256 r_) {
+    function moddiv(
+        uint256 call_,
+        uint256 a_,
+        uint256 b_,
+        uint256 m_
+    ) internal view returns (uint256 r_) {
         unchecked {
             r_ = modinv(call_, b_, m_);
 
@@ -851,12 +919,11 @@ library U384HintCollector {
                 mstore(add(0x0100, call_), mload(add(m_, 0x20)))
 
                 pop(staticcall(gas(), 0x5, call_, 0x0120, r_, 0x40))
-                tstore(1, add(tload(1), 1))
             }
         }
     }
 
-    function modinv(uint256 call_, uint256 b_, uint256 m_) internal returns (uint256 r_) {
+    function modinv(uint256 call_, uint256 b_, uint256 m_) internal view returns (uint256 r_) {
         unchecked {
             if (_hintsEnabled(call_)) {
                 r_ = _nextInverseHint(call_);
@@ -879,19 +946,17 @@ library U384HintCollector {
                 mstore(add(0x0100, call_), mload(add(m_, 0x20)))
 
                 pop(staticcall(gas(), 0x5, call_, 0x0120, r_, 0x40))
-                tstore(0, add(tload(0), 1))
             }
-            _collectInverse(r_);
         }
     }
 
-    function _hintsEnabled(uint256 call_) private returns (bool enabled_) {
+    function _hintsEnabled(uint256 call_) private pure returns (bool enabled_) {
         assembly {
             enabled_ := mload(add(call_, HINT_ENABLED_OFFSET))
         }
     }
 
-    function _nextInverseHint(uint256 call_) private returns (uint256 r_) {
+    function _nextInverseHint(uint256 call_) private pure returns (uint256 r_) {
         uint256 cursor_;
         uint256 length_;
         assembly {
@@ -910,19 +975,7 @@ library U384HintCollector {
         }
     }
 
-    function _collectInverse(uint256 inv_) private {
-        assembly {
-            if tload(8) {
-                let index_ := tload(2)
-                let slot_ := add(1000, mul(index_, 2))
-                tstore(slot_, mload(inv_))
-                tstore(add(slot_, 1), mload(add(inv_, 0x20)))
-                tstore(2, add(index_, 1))
-            }
-        }
-    }
-
-    function _modmulWithMod(uint256 call_, uint256 a_, uint256 b_, uint256 m_) private returns (uint256 r_) {
+    function _modmulWithMod(uint256 call_, uint256 a_, uint256 b_, uint256 m_) private view returns (uint256 r_) {
         unchecked {
             r_ = _allocate(SHORT_ALLOCATION);
             _mul(a_, b_, call_ + 0x60);
@@ -936,12 +989,11 @@ library U384HintCollector {
                 mstore(add(0x0100, call_), mload(add(m_, 0x20)))
 
                 pop(staticcall(gas(), 0x5, call_, 0x0120, r_, 0x40))
-                tstore(1, add(tload(1), 1))
             }
         }
     }
 
-    function _shl1(uint256 a_, uint256 r_) internal {
+    function _shl1(uint256 a_, uint256 r_) internal pure {
         assembly {
             let a1_ := mload(add(a_, 0x20))
 
@@ -950,7 +1002,7 @@ library U384HintCollector {
         }
     }
 
-    function _add(uint256 a_, uint256 b_, uint256 r_) private {
+    function _add(uint256 a_, uint256 b_, uint256 r_) private pure {
         assembly {
             let aWord_ := mload(add(a_, 0x20))
             let sum_ := add(aWord_, mload(add(b_, 0x20)))
@@ -964,7 +1016,7 @@ library U384HintCollector {
         }
     }
 
-    function _sub(uint256 a_, uint256 b_, uint256 r_) private {
+    function _sub(uint256 a_, uint256 b_, uint256 r_) private pure {
         assembly {
             let aWord_ := mload(add(a_, 0x20))
             let diff_ := sub(aWord_, mload(add(b_, 0x20)))
@@ -978,7 +1030,7 @@ library U384HintCollector {
         }
     }
 
-    function _subFrom(uint256 a_, uint256 b_) private {
+    function _subFrom(uint256 a_, uint256 b_) private pure {
         assembly {
             let aWord_ := mload(add(a_, 0x20))
             let diff_ := sub(aWord_, mload(add(b_, 0x20)))
@@ -992,7 +1044,7 @@ library U384HintCollector {
         }
     }
 
-    function _addTo(uint256 a_, uint256 b_) private {
+    function _addTo(uint256 a_, uint256 b_) private pure {
         assembly {
             let aWord_ := mload(add(a_, 0x20))
             let sum_ := add(aWord_, mload(add(b_, 0x20)))
@@ -1006,7 +1058,7 @@ library U384HintCollector {
         }
     }
 
-    function _mul(uint256 a_, uint256 b_, uint256 r_) private {
+    function _mul(uint256 a_, uint256 b_, uint256 r_) private pure {
         assembly {
             let a0_ := mload(a_)
             let a1_ := shr(128, mload(add(a_, 0x20)))
@@ -1073,7 +1125,7 @@ library U384HintCollector {
         }
     }
 
-    function _allocate(uint256 bytes_) private returns (uint256 handler_) {
+    function _allocate(uint256 bytes_) private pure returns (uint256 handler_) {
         unchecked {
             assembly {
                 handler_ := mload(0x40)

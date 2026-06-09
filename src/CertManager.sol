@@ -72,6 +72,12 @@ contract CertManager is ICertManager {
         revert("use hinted cert verification");
     }
 
+    /// @notice Verify a CA certificate against its (already-cached) parent and cache the result.
+    /// @dev Idempotent with a cache short-circuit: if `cert` is already verified and unexpired, the
+    ///      cached record is returned and `signatureHints` is ignored (so "" is valid on a re-call).
+    ///      On a cold cert, `signatureHints` must contain the real off-chain inverse hints for the
+    ///      cert signature; they are re-verified on-chain, so a wrong hint only reverts. Pass the
+    ///      root's hash (or 0 for the pinned root) as `parentCertHash`.
     function verifyCACertWithHints(bytes memory cert, bytes32 parentCertHash, bytes memory signatureHints)
         external
         returns (bytes32)
@@ -81,6 +87,10 @@ contract CertManager is ICertManager {
         return certHash;
     }
 
+    /// @notice Verify a leaf (client) certificate against its (already-cached) parent and cache it.
+    /// @dev Same cache short-circuit and hint semantics as {verifyCACertWithHints}: on a cold cert
+    ///      `signatureHints` must hold the real off-chain inverse hints (re-verified on-chain); on a
+    ///      cached cert they are ignored.
     function verifyClientCertWithHints(bytes memory cert, bytes32 parentCertHash, bytes memory signatureHints)
         external
         returns (VerifiedCert memory)

@@ -43,3 +43,26 @@ jobs:
         run: |
           forge test -vvv
         id: test
+
+  ffi-parity:
+    name: Off-chain witness parity (FFI)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: nightly
+
+      # Asserts the off-chain hint generator (tools/p384_hints.js) produces byte-identical
+      # hints to the on-chain Solidity reference; guards against the two drifting apart.
+      # Node.js is preinstalled on ubuntu-latest and the tools use only Node built-ins.
+      - name: Run FFI parity tests
+        env:
+          NITRO_RUN_FFI: "true"
+        run: |
+          forge test --ffi -vvv --match-test test_OffchainWitness
+        id: ffi

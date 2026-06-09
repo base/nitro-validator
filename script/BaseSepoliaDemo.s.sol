@@ -3,7 +3,7 @@ pragma solidity ^0.8.26;
 
 import {Script, console2} from "forge-std/Script.sol";
 import {CborDecode, CborElement, LibCborElement} from "../src/CborDecode.sol";
-import {CertManagerDemo} from "../src/demo/CertManagerDemo.sol";
+import {CertManagerDemo} from "../test/helpers/CertManagerDemo.sol";
 import {ICertManager} from "../src/ICertManager.sol";
 import {IP384Verifier} from "../src/IP384Verifier.sol";
 import {LibBytes} from "../src/LibBytes.sol";

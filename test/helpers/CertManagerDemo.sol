@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.15;
 
-import {CertManager} from "../CertManager.sol";
-import {IP384Verifier} from "../IP384Verifier.sol";
+import {CertManager} from "../../src/CertManager.sol";
+import {IP384Verifier} from "../../src/IP384Verifier.sol";
 
 /// @notice Demo-only certificate manager with configurable certificate expiry grace.
 /// @dev This exists only to replay expired Nitro fixtures on testnets. Do not use in production or audit target deployments.

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.15;
 
-import {ECDSA384} from "@solarity/libs/crypto/ECDSA384.sol";
+import {ECDSA384} from "./vendor/ECDSA384.sol";
 
 library ECDSA384Curve {
     // ECDSA384 curve parameters (NIST P-384)

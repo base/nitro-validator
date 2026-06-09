@@ -6,4 +6,9 @@ optimizer = true
 optimizer_runs = 999999
 solc_version = "0.8.26"
 
+[fmt]
+# Vendored third-party crypto is kept byte-identical to upstream (see src/vendor/README.md),
+# so it is excluded from this repo's formatting rules.
+ignore = ["src/vendor/*.sol"]
+
 # See more config options https://github.com/foundry-rs/foundry/blob/master/crates/config/README.md#all-options

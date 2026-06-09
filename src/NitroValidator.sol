@@ -77,6 +77,18 @@ contract NitroValidator {
         revert("use hinted attestation verification");
     }
 
+    /// @notice Validate a Nitro attestation document, supplying off-chain inverse hints for the
+    ///         final document signature.
+    /// @dev PRECONDITION: the attestation's entire certificate bundle (every CA cert plus the leaf
+    ///      cert) MUST already be verified and cached, via prior calls to
+    ///      `CertManager.verifyCACertWithHints` / `verifyClientCertWithHints` with real hints.
+    ///      This function re-walks the bundle with EMPTY hints (see `verifyCachedCertBundle`),
+    ///      which only succeeds on already-cached certs. If any cert is uncached it reverts with
+    ///      "inverse hint underflow" — even when `attestationSigHints` itself is valid.
+    /// @param attestationTbs The COSE Sign1 to-be-signed bytes (from `decodeAttestationTbs`).
+    /// @param signature The 96-byte (r||s) P-384 attestation signature.
+    /// @param attestationSigHints Off-chain inverse hints for the attestation signature; re-verified
+    ///        on-chain, so a wrong hint only reverts and can never forge a valid signature.
     function validateAttestationWithHints(
         bytes memory attestationTbs,
         bytes memory signature,
@@ -119,6 +131,11 @@ contract NitroValidator {
         return ptrs;
     }
 
+    /// @dev Re-walks the cert bundle (cabundle + leaf) passing EMPTY hint streams, relying on the
+    ///      CertManager cache short-circuit: an already-verified, unexpired cert returns its cached
+    ///      record without re-checking the signature (and so needs no hints). If a cert is NOT
+    ///      cached, signature verification is attempted against an empty hint stream and reverts
+    ///      with "inverse hint underflow". Callers must therefore pre-cache the whole bundle first.
     function verifyCachedCertBundle(bytes memory certificate, bytes[] memory cabundle)
         internal
         returns (ICertManager.VerifiedCert memory)

@@ -4,7 +4,7 @@ pragma solidity ^0.8.26;
 import {Test, console} from "forge-std/Test.sol";
 import {NitroValidator} from "../../src/NitroValidator.sol";
 import {CertManager} from "../../src/CertManager.sol";
-import {CertManagerDemo} from "../../src/demo/CertManagerDemo.sol";
+import {CertManagerDemo} from "../helpers/CertManagerDemo.sol";
 import {ICertManager} from "../../src/ICertManager.sol";
 import {CborDecode} from "../../src/CborDecode.sol";
 import {P384Verifier} from "../../src/P384Verifier.sol";
@@ -170,6 +170,75 @@ contract HintedNitroAttestationTest is Test {
 
         vm.expectRevert("use hinted attestation verification");
         validator.validateAttestation("", "");
+    }
+
+    // Expiry is checked in _verifyValidity during cold parsing, before the signature is verified,
+    // so an expired cert is rejected on its FIRST (uncached) verification even with empty hints.
+    // Distinct from test_HintedCACertRejectsExpiredCachedCert, which exercises the cached path
+    // ("cert expired").
+    function test_HintedCACertRejectsExpiredCertOnFirstVerification() public {
+        bytes memory attestation = _repairMissingPublicKeyBytes(_decodeBase64(_realAttestationB64()));
+        (bytes memory attestationTbs,) = validator.decodeAttestationTbs(attestation);
+        NitroValidator.Ptrs memory ptrs = parser.parseAttestation(attestationTbs);
+        (bytes memory caCert, bytes32 parentHash,) = _firstNonRootCA(attestationTbs, ptrs);
+
+        vm.warp(1768953600); // 2026-01-21T00:00:00Z, past this fixture's first non-root CA expiry.
+
+        // caCert has never been verified, so this is the cold path; the root parent stays valid.
+        vm.expectRevert("certificate not valid anymore");
+        certManager.verifyCACertWithHints(caCert, parentHash, "");
+    }
+
+    // _certificateExpired is `notAfter < block.timestamp`, so a cert is still valid at the exact
+    // notAfter second and expired one second later. Verify both sides of that boundary on a cold
+    // (uncached) cert via fresh CertManager instances.
+    function test_CertValidityBoundaryAtNotAfter() public {
+        bytes memory attestation = _repairMissingPublicKeyBytes(_decodeBase64(_realAttestationB64()));
+        (bytes memory attestationTbs,) = validator.decodeAttestationTbs(attestation);
+        NitroValidator.Ptrs memory ptrs = parser.parseAttestation(attestationTbs);
+        (bytes memory caCert, bytes32 parentHash, bytes memory parentPubKey) = _firstNonRootCA(attestationTbs, ptrs);
+
+        // Learn caCert's notAfter by caching it on the shared manager at the (valid) setUp time.
+        bytes memory hints = hintCollector.collectCertSignatureHints(caCert, parentPubKey);
+        bytes32 certHash = certManager.verifyCACertWithHints(caCert, parentHash, hints);
+        uint64 notAfter = certManager.loadVerified(certHash).notAfter;
+
+        // Exactly at notAfter: cold verification on a fresh manager succeeds (cert still valid).
+        CertManager atBoundary = new CertManager(p384Verifier);
+        vm.warp(notAfter);
+        atBoundary.verifyCACertWithHints(caCert, parentHash, hints);
+        assertGt(atBoundary.loadVerified(certHash).pubKey.length, 0, "cert valid at notAfter");
+
+        // One second later: cold verification on a fresh manager is rejected as expired.
+        CertManager pastBoundary = new CertManager(p384Verifier);
+        vm.warp(uint256(notAfter) + 1);
+        vm.expectRevert("certificate not valid anymore");
+        pastBoundary.verifyCACertWithHints(caCert, parentHash, hints);
+    }
+
+    // ECDSA384 rejects out-of-range scalars (r==0, r>=n, s==0, s>lowSmax) before consuming any
+    // hints, so the verifier returns false (no hints needed). Guards against malleable/degenerate
+    // signatures independent of the cert-chain plumbing.
+    function test_P384VerifierRejectsOutOfRangeScalars() public view {
+        bytes memory hash = new bytes(48); // contents irrelevant: rejected before hashing/curve math
+        bytes memory pubKey = new bytes(96); // not reached: bounds are checked before _isOnCurve
+
+        bytes memory zero48 = new bytes(48);
+        bytes memory one48 = new bytes(48);
+        one48[47] = 0x01;
+        bytes memory max48 = new bytes(48); // > n and > lowSmax
+        for (uint256 i = 0; i < 48; i++) {
+            max48[i] = 0xff;
+        }
+
+        // r == 0
+        assertFalse(p384Verifier.verifyP384SignatureWithHints(hash, abi.encodePacked(zero48, one48), pubKey, ""));
+        // r >= n
+        assertFalse(p384Verifier.verifyP384SignatureWithHints(hash, abi.encodePacked(max48, one48), pubKey, ""));
+        // s == 0
+        assertFalse(p384Verifier.verifyP384SignatureWithHints(hash, abi.encodePacked(one48, zero48), pubKey, ""));
+        // s > lowSmax
+        assertFalse(p384Verifier.verifyP384SignatureWithHints(hash, abi.encodePacked(one48, max48), pubKey, ""));
     }
 
     function test_OffchainWitnessGeneratorMatchesSolidityCollector() public {
