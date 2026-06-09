@@ -73,6 +73,8 @@ contract NitroValidator {
         signature = attestation.slice(signaturePtr.start(), signaturePtr.length());
     }
 
+    /// @notice DEPRECATED — always reverts. The fully on-chain (non-hinted) path is too expensive
+    ///         post-Fusaka and has been removed. Use {validateAttestationWithHints}.
     function validateAttestation(bytes memory, bytes memory) public pure returns (Ptrs memory) {
         revert("use hinted attestation verification");
     }
@@ -85,6 +87,17 @@ contract NitroValidator {
     ///      This function re-walks the bundle with EMPTY hints (see `verifyCachedCertBundle`),
     ///      which only succeeds on already-cached certs. If any cert is uncached it reverts with
     ///      "inverse hint underflow" — even when `attestationSigHints` itself is valid.
+    /// @dev INTEGRATOR RESPONSIBILITIES — this function proves the attestation is genuine and
+    ///      well-formed, but deliberately does NOT enforce:
+    ///      - Freshness / anti-replay: `ptrs.timestamp` is only checked to be non-zero and `nonce`
+    ///        is only length-bounded. A valid attestation can be replayed until its leaf cert
+    ///        expires. Callers that need freshness must compare `ptrs.timestamp` to `block.timestamp`
+    ///        and/or match `ptrs.nonce` against a challenge they issued.
+    ///      - Signature non-malleability: low-S is not enforced (see {ECDSA384Curve.CURVE_LOW_S_MAX}),
+    ///        so do not use `signature` (or its hash) as a uniqueness key — dedupe on attestation
+    ///        fields instead.
+    ///      - PCR / moduleID policy: the caller must check `ptrs.pcrs` / `ptrs.moduleID` against the
+    ///        enclave image(s) they trust.
     /// @param attestationTbs The COSE Sign1 to-be-signed bytes (from `decodeAttestationTbs`).
     /// @param signature The 96-byte (r||s) P-384 attestation signature.
     /// @param attestationSigHints Off-chain inverse hints for the attestation signature; re-verified

@@ -109,6 +109,39 @@ contract Validator {
 }
 ```
 
+## Installation
+
+As a Foundry dependency:
+
+```sh
+forge install base/nitro-validator
+```
+
+Then map the `@nitro-validator/` prefix used in the examples above to the package's `src/` in your
+`remappings.txt`:
+
+```
+@nitro-validator/=lib/nitro-validator/src/
+```
+
+The library vendors its only third-party dependency (the P-384 verifier) under `src/vendor/`, so no
+additional submodules are required beyond `forge-std`.
+
+## Security considerations
+
+Verification proves an attestation is genuine; some properties are intentionally left to the
+integrator (see [docs](docs/hinted-p384-nitro-attestation.md#integrator-responsibilities-what-the-contract-does-not-enforce)):
+
+- **Freshness / replay** — the contract does not compare the attestation `timestamp` to
+  `block.timestamp` or match the `nonce` to a challenge. Enforce freshness yourself if you need it.
+- **Signature malleability** — low-S is not enforced (AWS does not emit low-S), so the malleable
+  twin `(r, n-s)` also verifies. Never use the signature as a uniqueness key; dedupe on canonical
+  attestation fields instead.
+- **Enclave policy** — checking `pcrs` / `moduleID` against the enclave image(s) you trust is your
+  responsibility.
+- **Revocation** — not supported (consistent with AWS's documented validation process, linked
+  above).
+
 ## Build
 
 ```sh

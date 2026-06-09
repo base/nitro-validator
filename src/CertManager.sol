@@ -64,10 +64,13 @@ contract CertManager is ICertManager {
         );
     }
 
+    /// @notice DEPRECATED — always reverts. The fully on-chain (non-hinted) path is too expensive
+    ///         post-Fusaka and has been removed. Use {verifyCACertWithHints}.
     function verifyCACert(bytes memory, bytes32) external pure returns (bytes32) {
         revert("use hinted cert verification");
     }
 
+    /// @notice DEPRECATED — always reverts. Use {verifyClientCertWithHints}.
     function verifyClientCert(bytes memory, bytes32) external pure returns (VerifiedCert memory) {
         revert("use hinted cert verification");
     }

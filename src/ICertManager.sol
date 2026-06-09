@@ -10,9 +10,7 @@ interface ICertManager {
         bytes pubKey;
     }
 
-    function verifyCACert(bytes memory cert, bytes32 parentCertHash) external returns (bytes32);
-
-    function verifyClientCert(bytes memory cert, bytes32 parentCertHash) external returns (VerifiedCert memory);
+    // --- Active (hinted) entrypoints ---
 
     function verifyCACertWithHints(bytes memory cert, bytes32 parentCertHash, bytes memory signatureHints)
         external
@@ -23,4 +21,12 @@ interface ICertManager {
         returns (VerifiedCert memory);
 
     function loadVerified(bytes32 certHash) external view returns (VerifiedCert memory);
+
+    // --- DEPRECATED: these always revert; use the *WithHints variants above. ---
+
+    /// @dev DEPRECATED — always reverts ("use hinted cert verification").
+    function verifyCACert(bytes memory cert, bytes32 parentCertHash) external returns (bytes32);
+
+    /// @dev DEPRECATED — always reverts ("use hinted cert verification").
+    function verifyClientCert(bytes memory cert, bytes32 parentCertHash) external returns (VerifiedCert memory);
 }

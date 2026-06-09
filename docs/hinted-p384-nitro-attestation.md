@@ -442,6 +442,26 @@ can never silently diverge.
   must stay in sync with the verifier's execution order. Its DER/CBOR parsing should
   be reviewed for robustness.
 
+### Integrator responsibilities (what the contract does NOT enforce)
+
+Verification proves an attestation is genuine and well-formed. The following are
+deliberately left to the caller and must be handled in the consuming contract:
+
+- **Freshness / anti-replay.** `validateAttestationWithHints` only checks that
+  `timestamp` is non-zero and that `nonce` is within a size bound; it never compares
+  `timestamp` to `block.timestamp` nor matches `nonce` to a challenge. A valid
+  attestation can be replayed until its short-lived leaf certificate expires. If you
+  need freshness, compare `ptrs.timestamp` to `block.timestamp` and/or verify
+  `ptrs.nonce` against a value you issued.
+- **Signature malleability.** Low-S is intentionally not enforced (AWS does not
+  guarantee low-S; see `CURVE_LOW_S_MAX` in `ECDSA384Curve.sol`), so for a valid
+  signature `(r, s)` the twin `(r, n−s)` also verifies. This cannot forge an
+  attestation AWS never produced, but you must NOT use the raw signature (or
+  `attestationTbs + signature`, or its hash) as a unique key — dedupe on canonical
+  attestation fields (e.g. `moduleID + timestamp + nonce`).
+- **Enclave-image / PCR policy.** The contract returns the parsed `pcrs` and
+  `moduleID`; deciding which enclave images you trust is application policy.
+
 ## 11. On-chain demo
 
 A Base Sepolia run of the §6 cold sequence needs: an RPC URL, a funded broadcaster
@@ -464,9 +484,10 @@ submitting ordinary transactions.
 
 ## Appendix: the code change
 
-The hinted verifier is the upstream `ECDSA384` verifier from the
-`dl-solarity/solidity-lib` dependency, patched in place on the
-`leanthebean/solidity-lib` fork with **one operation — modular inversion — made
+The hinted verifier is the upstream `ECDSA384` verifier from
+`dl-solarity/solidity-lib`, vendored into this repo at `src/vendor/ECDSA384.sol` (see
+`src/vendor/README.md` for provenance and the exact upstream diff in
+`src/vendor/ECDSA384.hinted.patch`) with **one operation — modular inversion — made
 hint-aware in two places**. Everything else (the Strauss–Shamir ladder, precompute
 table, on-curve check, scalar bounds, final `x_R == r`) is unchanged. When hints are
 disabled the code follows the original path, so the unhinted path is the equivalence
