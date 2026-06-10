@@ -307,87 +307,18 @@ pre-verified value* for the same inverse the original computes.
 
 ## 5. Preparing calls off-chain
 
-An off-chain hint generator (Node.js `BigInt`, no dependencies) reproduces the
-verifier's execution order and emits the packed stream. In this repository it is
-`tools/p384_hints.js`:
+Hints are produced off-chain by replaying the verifier's deterministic execution order
+and emitting the packed 48-byte inverse stream. The generator only has to get the
+**order and count** right: every value is re-checked on-chain (§4), so it is trusted for
+*liveness*, not correctness — a bug can cause a revert, never a false accept. A
+production caller can therefore implement it in whatever language its backend uses; the
+contracts only ever see ordinary calldata via the `*WithHints` entrypoints.
 
-```sh
-node tools/p384_hints.js verify       --hash <0x 48B> --signature <0x r‖s> --pubkey <0x x‖y>
-node tools/p384_hints.js cert         --cert <0x DER | base64 | @file> --pubkey <0x parent x‖y>
-node tools/p384_hints.js attestation  --attestation <0x COSE | base64 | @file> --pubkey <0x leaf x‖y>
-```
-
-`cert` mode SHA-384-hashes the DER TBS certificate and packs the DER signature into
-`r‖s`; `attestation` mode reconstructs the COSE `Sig_structure` Nitro signs and
-hashes it. The generator only has to get the **order and count** right — every value
-is re-checked on-chain (§4), so a generator bug causes a revert, never a false accept.
-
-The CLI is a reference implementation and demo convenience, not a requirement of the
-on-chain design. In production, the caller service should implement the same
-deterministic hint generation in its own off-chain stack (for example Go or Rust),
-or use `tools/p384_hints.js` as a byte-for-byte reference while porting. The smart
-contracts only see ordinary calldata:
-
-```solidity
-verifyCACertWithHints(bytes cert, bytes32 parentCertHash, bytes signatureHints)
-verifyClientCertWithHints(bytes cert, bytes32 parentCertHash, bytes signatureHints)
-validateAttestationWithHints(bytes attestationTbs, bytes signature, bytes attestationHints)
-```
-
-So the production service prepares:
-
-1. the DER certificates from the Nitro `cabundle` and `certificate`;
-2. the parent certificate hashes (`keccak256(derCert)`);
-3. one packed inverse-hint stream per uncached certificate signature;
-4. the COSE `Sig_structure` hash, the document signature, and its hint stream; and
-5. the ABI-encoded calls for the cold or warm sequence in §6.
-
-The service can also call `loadVerified(certHash)` before submitting transactions to
-choose the shortest path: full cold chain, cached CA chain plus new leaf, or fully
-warm document validation.
-
-For integration testing and porting, `tools/hinted_attestation_calls.js` builds the
-full transaction plan from one Nitro attestation:
-
-```sh
-node tools/hinted_attestation_calls.js prepare \
-  --attestation <0x COSE | base64 | @file> \
-  --cert-manager <0x CertManager> \
-  --validator <0x NitroValidator>
-```
-
-It outputs JSON with `cold` and `warm` arrays. Each item contains:
-
-- `to`: target contract address;
-- `function`: Solidity function signature;
-- `args`: decoded ABI arguments, including the packed hint stream;
-- `calldata`: ready-to-submit ABI calldata;
-- `hintBytes` / `hintCount`: the witness size.
-
-The bundled fixture can be prepared with:
-
-```sh
-node tools/hinted_attestation_calls.js fixture \
-  --cert-manager <0x CertManager> \
-  --validator <0x NitroValidator>
-```
-
-This preparer is also reference tooling, not a production dependency. A production
-Go or Rust service should implement the same deterministic steps in-process:
-
-1. decode the Nitro COSE_Sign1 envelope and payload;
-2. extract the `cabundle` DER certificates and leaf `certificate`;
-3. compute `keccak256(derCert)` identities for cache lookups and parent hashes;
-4. compute inverse hints for every cert/document signature that will be verified in
-   the chosen transaction sequence;
-5. ABI-pack the hinted contract calls; and
-6. submit the calls in dependency order.
-
-In Go this maps naturally to `abi.Pack` plus a Keccak implementation from the
-Ethereum stack; in Rust, to an ABI encoder such as `alloy-sol-types` / `ethers`
-and the corresponding Keccak primitive. The Solidity contracts do not know or care
-which language produced the bytes — malformed hints or mismatched calldata simply
-revert on-chain.
+A reference implementation is included in this repo: `tools/p384_hints.js` (Node.js, no
+dependencies) generates the hint stream for a raw signature, a certificate, or a full
+attestation, and a companion script assembles a ready-to-submit transaction plan (the
+cold/warm sequences of §6) from one attestation. These are reference and demo tooling,
+not a production dependency — use them as a byte-for-byte oracle when porting.
 
 ## 6. The attestation verification flow
 
