@@ -94,8 +94,9 @@ Three deployable contracts:
 
 - **`P384Verifier`** — all ECDSA-P384 math and hint checking, behind one external
   call. It is isolated so the parser/cache contracts stay under the EIP-170 code-size
-  limit. It uses the patched `ECDSA384` library in the `solidity-lib` submodule.
-  `CertManager` and `NitroValidator` hold **immutable** references to it.
+  limit. It uses the hint-aware `ECDSA384` library vendored at `src/vendor/ECDSA384.sol`
+  (see `src/vendor/README.md`). `CertManager` and `NitroValidator` hold **immutable**
+  references to it.
 - **`CertManager`** — parses/validates certificates, caches verified ones, and
   pins the AWS Nitro root. Implements `ICertManager`.
 - **`NitroValidator`** — parses the CBOR/COSE attestation and drives the
@@ -382,7 +383,7 @@ Runtime sizes (`forge build --sizes`); EIP-170 limit is 24,576 bytes:
 | contract | runtime size | margin |
 |----------|-------------:|-------:|
 | `P384Verifier` | 7,805 | 16,771 |
-| `CertManager` | 19,372 | 5,204 |
+| `CertManager` | 19,394 | 5,182 |
 | `NitroValidator` | 14,062 | 10,514 |
 
 (Test-only helper contracts are not part of the deployable contract set.)
@@ -391,9 +392,13 @@ Runtime sizes (`forge build --sizes`); EIP-170 limit is 24,576 bytes:
 
 The hinted contracts are exercised against the real fixture and adversarial inputs.
 Covered failure modes: mutated hint, truncated hint, surplus hint, wrong parent hash,
-expired cached cert, CA/client role mismatch, missing warm cache, invalid final
-signature, disabled unhinted entrypoints, EIP-170 fit, and off-chain↔on-chain hint
-equivalence.
+expired cached cert, expired cert on first (cold) verification, the `notAfter` validity
+boundary, CA/client role mismatch, missing warm cache, invalid final signature,
+out-of-range ECDSA scalars (`r=0`, `r≥n`, `s=0`, `s>lowSmax`), disabled unhinted
+entrypoints, EIP-170 fit, and off-chain↔on-chain hint equivalence. The DER, CBOR, and
+byte-slicing parsers additionally have direct unit and fuzz tests for malformed and
+out-of-bounds input (`test/Asn1Decode.t.sol`, `test/CborDecode.t.sol`,
+`test/LibBytes.t.sol`).
 
 | invariant | component | how it is tested |
 |-----------|-----------|------------------|
@@ -403,6 +408,9 @@ equivalence.
 | hinted verifier matches the original accept/reject set | `P384Verifier` | accepts a valid signature; rejects mutated hash / signature / public key |
 | no unhinted fallback via hinted entrypoints | `CertManager` | the unhinted entrypoints revert |
 | warm validation requires cached certs | `NitroValidator` | empty-hint final validation reverts when a cert is uncached |
+| out-of-range scalars are rejected | `P384Verifier` | `r=0` / `r≥n` / `s=0` / `s>lowSmax` signatures return false |
+| certificate validity is enforced at the boundary | `CertManager` | cold-path expiry reverts; valid at `notAfter`, expired at `notAfter+1` |
+| parsers reject malformed / out-of-bounds input | `Asn1Decode`, `CborDecode`, `LibBytes` | direct unit + fuzz tests for bad tags, lengths, types, and slices |
 | off-chain generator matches on-chain order, rejects bad input | off-chain generator | equivalence test + negative-input checks |
 
 The off-chain↔on-chain hint equivalence is checked under an FFI test (it shells out to
