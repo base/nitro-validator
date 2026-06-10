@@ -22,6 +22,110 @@ precompile, and that is exactly what the Fusaka upgrade reprices.
 
 ---
 
+## Intuition: how hinting works in plain terms
+
+*A non-cryptographer's walkthrough of the idea. §1 onward give the formal construction,
+measured gas, and proofs.*
+
+### Some things are hard to find but easy to check
+
+Think about factoring. Ask "what are the factors of 589?" and you have to grind. But
+hand someone the answer — 19 and 31 — and they confirm it with one multiplication:
+19 × 31 = 589 ✓.
+
+- Finding the answer is hard / expensive.
+- Checking a proposed answer is easy / cheap.
+
+A **hint** is exactly this: instead of making the contract *find* a hard value, the
+caller finds it off-chain and hands it over, and the contract only *checks* it.
+
+### Our hard thing: a modular inverse
+
+The P-384 verifier constantly divides in modular arithmetic — `a / b mod m`. Division
+there means "multiply by the inverse of `b`", where the inverse `inv` is the number with
+`b · inv ≡ 1 (mod m)`.
+
+Take a tiny modulus `m = 7` and find the inverse of `b = 3`:
+
+- **The hard way (what the contract used to do):** compute `inv = b^(m−2) mod m`
+  (Fermat's little theorem) = `3^5 mod 7`. `3^5 = 243`, and `243 mod 7 = 5` — several
+  multiplications to get there.
+- **The easy way (checking a proposed answer):** someone hands you `inv = 5`. One
+  multiply: `3 · 5 = 15`, `15 mod 7 = 1` ✓ — done.
+
+> Same asymmetry as factoring: *finding* 5 took exponentiation; *checking* 5 took one
+> multiply.
+
+### Why that gap is huge on-chain
+
+Now scale up: the real modulus is a 384-bit number, not 7.
+
+- **Finding** the inverse (`b^(m−2)`) means raising to a 384-bit power — hundreds of
+  big-number multiplications via the EVM's `MODEXP` precompile, which Fusaka made ~10×
+  more expensive.
+- **Checking** a proposed inverse is still one big-number multiply — cheap, and Fusaka
+  barely touches it.
+
+So each inverse goes from hundreds of expensive operations to one cheap one.
+
+### "But can we trust the hint?" — no, and we don't have to
+
+The caller could lie and send `inv = 4`. The contract checks:
+
+```
+3 · 4 = 12,   12 mod 7 = 5   ≠ 1   ✗   → revert
+```
+
+A wrong hint fails the check and the transaction reverts. A malicious caller can waste
+their own gas, but can never push a wrong value through. The hint is a *proposal,
+validated before use* — nothing is trusted.
+
+### How it's used in the real verifier
+
+One P-384 signature verify needs ~570 of these inverses.
+
+- **Before (no hints):** the contract computed all ~570 on-chain → ~570 expensive
+  `MODEXP` calls. This is what blew past the gas cap.
+- **After (with hints):** the caller computes all ~570 off-chain (free, on their own
+  machine) and sends them as a list in calldata; the contract pops them one at a time
+  and checks each with a single multiply.
+
+The list is just values back-to-back, consumed in order:
+
+```
+caller sends:   [ inv_1 , inv_2 , inv_3 , … , inv_570 ]
+
+contract:   needs 1/b_1  → take inv_1, check  b_1 · inv_1 ≡ 1, use it
+            needs 1/b_2  → take inv_2, check  b_2 · inv_2 ≡ 1, use it
+            needs 1/b_3  → take inv_3, check  b_3 · inv_3 ≡ 1, use it
+            …
+```
+
+There are no labels — position `i` is for the `i`-th inverse the contract needs, because
+it always does its work in the same deterministic order. (§4 gives the exact stream
+format — 48-byte big-endian values — and the two guardrails that force the count to be
+exact: it reverts if the list runs out early or has leftover values.)
+
+### Why this is provably safe
+
+Because `m` is **prime**, every nonzero number has exactly *one* inverse — there is no
+second valid answer. So if a hint passes `b · inv ≡ 1 (mod m)`, it must be the one true
+inverse, bit-for-bit identical to what the contract would have computed itself. The
+hinted verifier therefore accepts exactly the same signatures as the original — cheaper,
+with nothing changed about what it accepts or rejects, so no new way to forge anything.
+(§4, *Why this is sound*, states this formally.)
+
+> **One-line recap.** Computing a modular inverse is expensive; checking one is a single
+> multiply. So the caller computes the ~570 inverses off-chain and submits them as hints;
+> the contract verifies each (`b · inv ≡ 1`) before using it. Wrong hints revert, and
+> since a prime modulus has a unique inverse, a passing hint is guaranteed to be the real
+> one.
+>
+> The contract stops being a *solver* and becomes a *checker* — and checking is what
+> blockchains are cheap at.
+
+---
+
 ## 1. Why this exists
 
 A P384 ECDSA verify is dominated by **modular inversions** computed on-chain via the
