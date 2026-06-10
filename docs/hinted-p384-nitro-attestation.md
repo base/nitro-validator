@@ -49,7 +49,10 @@ Take a tiny modulus `m = 7` and find the inverse of `b = 3`:
 
 - **The hard way (what the contract used to do):** compute `inv = b^(m−2) mod m`
   (Fermat's little theorem) = `3^5 mod 7`. `3^5 = 243`, and `243 mod 7 = 5` — several
-  multiplications to get there.
+  multiplications to get there. In this toy example the exponent `m−2` is just `5`, but
+  for real P-384 the modulus is a **384-bit** number, so the exponent `m−2` is *also*
+  ~384 bits — a value around 10¹¹⁵. Raising to a power *that* size is what makes the step
+  so expensive (and it's why the curve is called *p384*).
 - **The easy way (checking a proposed answer):** someone hands you `inv = 5`. One
   multiply: `3 · 5 = 15`, `15 mod 7 = 1` ✓ — done.
 
@@ -60,9 +63,9 @@ Take a tiny modulus `m = 7` and find the inverse of `b = 3`:
 
 Now scale up: the real modulus is a 384-bit number, not 7.
 
-- **Finding** the inverse (`b^(m−2)`) means raising to a 384-bit power — hundreds of
-  big-number multiplications via the EVM's `MODEXP` precompile, which Fusaka made ~10×
-  more expensive.
+- **Finding** the inverse (`b^(m−2)`) means raising to that ~384-bit exponent — hundreds
+  of big-number multiplications via the EVM's `MODEXP` precompile, which Fusaka made ~10×
+  more expensive. And a single signature verify does this ~570 times.
 - **Checking** a proposed inverse is still one big-number multiply — cheap, and Fusaka
   barely touches it.
 
@@ -89,6 +92,20 @@ One P-384 signature verify needs ~570 of these inverses.
 - **After (with hints):** the caller computes all ~570 off-chain (free, on their own
   machine) and sends them as a list in calldata; the contract pops them one at a time
   and checks each with a single multiply.
+
+Each hint is a **48-byte number** (the inverse), and a verify needs ~570 of them, so the
+calldata is roughly 570 × 48 ≈ 27 KB per signature. A cold attestation has five such
+signatures:
+
+| signature | hint bytes | inverses (÷ 48) |
+|---|---:|---:|
+| CA cert 1 | 27,456 | 572 |
+| CA cert 2 | 27,408 | 571 |
+| CA cert 3 | 27,408 | 571 |
+| client / leaf cert | 27,504 | 573 |
+| COSE document | 27,312 | 569 |
+
+(§6 maps these five signatures to transactions; §7 has their gas.)
 
 The list is just values back-to-back, consumed in order:
 
