@@ -87,6 +87,18 @@ contract NitroValidatorHarness is NitroValidator {
 
 /// @notice Minimal ICertManager stub; _parseAttestation is pure so this is never called.
 contract StubCertManager is ICertManager {
+    function owner() external pure returns (address) {
+        return address(0);
+    }
+
+    function revoker() external pure returns (address) {
+        return address(0);
+    }
+
+    function revoked(bytes32) external pure returns (bool) {
+        return false;
+    }
+
     function verifyCACert(bytes memory, bytes32) external pure returns (bytes32) {
         return bytes32(0);
     }
@@ -110,6 +122,20 @@ contract StubCertManager is ICertManager {
     function loadVerified(bytes32) external pure returns (VerifiedCert memory v) {
         return v;
     }
+
+    function isRevoked(bytes32) external pure returns (bool) {
+        return false;
+    }
+
+    function transferOwnership(address) external pure {}
+
+    function setRevoker(address) external pure {}
+
+    function revokeCert(bytes32) external pure {}
+
+    function revokeCerts(bytes32[] calldata) external pure {}
+
+    function unrevokeCert(bytes32) external pure {}
 }
 
 // ──────────────────────────────────────────────────────────────

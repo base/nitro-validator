@@ -6,6 +6,15 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added
+- Operational certificate revocation in `CertManager`: an owner-managed `revoker` can mark one or
+  many certificate hashes revoked, and the owner can rotate the revoker or undo accidental
+  revocations.
+
+### Changed
+- Certificate verification and cached reuse now reject revoked certificates and revoked cached
+  parent-chain ancestors independently of `notAfter`.
+
 ### Fixed
 - Reject non-canonical P-384 public key coordinates greater than or equal to the field prime `p`.
 
@@ -49,4 +58,5 @@ yet a general-availability release.
   in NatSpec, the README, and the design doc.
 - Moved the demo `CertManagerDemo` out of `src/` into `test/helpers/`.
 
+[Unreleased]: https://github.com/base/nitro-validator/compare/v2.0.0-rc.1...HEAD
 [2.0.0-rc.1]: https://github.com/base/nitro-validator/releases/tag/v2.0.0-rc.1
