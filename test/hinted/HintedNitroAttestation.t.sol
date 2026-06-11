@@ -103,6 +103,38 @@ contract HintedNitroAttestationTest is Test {
         certManager.verifyCACertWithHints(caCert, bytes32(0), "");
     }
 
+    function test_HintedCACertRejectsCachedParentMismatch() public {
+        bytes memory attestation = _repairMissingPublicKeyBytes(_decodeBase64(_realAttestationB64()));
+        (bytes memory attestationTbs,) = validator.decodeAttestationTbs(attestation);
+        NitroValidator.Ptrs memory ptrs = parser.parseAttestation(attestationTbs);
+
+        bytes memory rootCert = attestationTbs.slice(ptrs.cabundle[0]);
+        bytes32 rootHash = keccak256(rootCert);
+        bytes memory ca1 = attestationTbs.slice(ptrs.cabundle[1]);
+        bytes memory ca1Hints = hintCollector.collectCertSignatureHints(ca1, certManager.loadVerified(rootHash).pubKey);
+        bytes32 ca1Hash = certManager.verifyCACertWithHints(ca1, rootHash, ca1Hints);
+
+        bytes memory ca2 = attestationTbs.slice(ptrs.cabundle[2]);
+        bytes memory ca2Hints = hintCollector.collectCertSignatureHints(ca2, certManager.loadVerified(ca1Hash).pubKey);
+        certManager.verifyCACertWithHints(ca2, ca1Hash, ca2Hints);
+
+        vm.expectRevert("parent cert mismatch");
+        certManager.verifyCACertWithHints(ca2, rootHash, "");
+    }
+
+    function test_HintedClientCertRejectsCachedParentMismatch() public {
+        bytes memory attestation = _repairMissingPublicKeyBytes(_decodeBase64(_realAttestationB64()));
+        (bytes memory attestationTbs,) = validator.decodeAttestationTbs(attestation);
+        NitroValidator.Ptrs memory ptrs = parser.parseAttestation(attestationTbs);
+        _cacheCertBundleWithHints(attestationTbs);
+
+        bytes memory rootCert = attestationTbs.slice(ptrs.cabundle[0]);
+        bytes memory clientCert = attestationTbs.slice(ptrs.cert);
+
+        vm.expectRevert("parent cert mismatch");
+        certManager.verifyClientCertWithHints(clientCert, keccak256(rootCert), "");
+    }
+
     function test_HintedCACertRejectsExpiredCachedCert() public {
         bytes memory attestation = _repairMissingPublicKeyBytes(_decodeBase64(_realAttestationB64()));
         (bytes memory attestationTbs,) = validator.decodeAttestationTbs(attestation);

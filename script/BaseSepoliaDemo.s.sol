@@ -18,6 +18,7 @@ contract NitroValidatorScriptParser is NitroValidator {
     }
 }
 
+/// @dev Uses vm.ffi to run the off-chain hint tools; invoke the script with Foundry's `--ffi` flag.
 contract BaseSepoliaDemo is Script {
     using CborDecode for bytes;
     using LibBytes for bytes;

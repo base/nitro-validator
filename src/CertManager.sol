@@ -46,6 +46,8 @@ contract CertManager is ICertManager {
 
     // certHash -> VerifiedCert
     mapping(bytes32 => bytes) public verified;
+    // certHash -> parent cert hash used during cold verification
+    mapping(bytes32 => bytes32) internal verifiedParent;
 
     IP384Verifier public immutable p384Verifier;
 
@@ -77,28 +79,29 @@ contract CertManager is ICertManager {
 
     /// @notice Verify a CA certificate against its (already-cached) parent and cache the result.
     /// @dev Idempotent with a cache short-circuit: if `cert` is already verified and unexpired, the
-    ///      cached record is returned and `signatureHints` is ignored (so "" is valid on a re-call).
-    ///      On a cold cert, `signatureHints` must contain the real off-chain inverse hints for the
-    ///      cert signature; they are re-verified on-chain, so a wrong hint only reverts. Pass the
-    ///      root's hash (or 0 for the pinned root) as `parentCertHash`.
+    ///      cached record is returned and `signatureHints` is ignored, but `parentCertHash` must
+    ///      match the parent used during cold verification. On a cold cert, `signatureHints` must
+    ///      contain the real off-chain inverse hints for the cert signature; they are re-verified
+    ///      on-chain, so a wrong hint only reverts. Pass 0 only when submitting the pinned root;
+    ///      otherwise pass the cached parent cert hash.
     function verifyCACertWithHints(bytes memory cert, bytes32 parentCertHash, bytes memory signatureHints)
         external
         returns (bytes32)
     {
         bytes32 certHash = keccak256(cert);
-        _verifyCert(cert, certHash, true, _loadVerified(parentCertHash), signatureHints);
+        _verifyCert(cert, certHash, true, parentCertHash, signatureHints);
         return certHash;
     }
 
     /// @notice Verify a leaf (client) certificate against its (already-cached) parent and cache it.
     /// @dev Same cache short-circuit and hint semantics as {verifyCACertWithHints}: on a cold cert
     ///      `signatureHints` must hold the real off-chain inverse hints (re-verified on-chain); on a
-    ///      cached cert they are ignored.
+    ///      cached cert they are ignored, but `parentCertHash` must match the cold verification parent.
     function verifyClientCertWithHints(bytes memory cert, bytes32 parentCertHash, bytes memory signatureHints)
         external
         returns (VerifiedCert memory)
     {
-        return _verifyCert(cert, keccak256(cert), false, _loadVerified(parentCertHash), signatureHints);
+        return _verifyCert(cert, keccak256(cert), false, parentCertHash, signatureHints);
     }
 
     function loadVerified(bytes32 certHash) external view returns (VerifiedCert memory) {
@@ -109,9 +112,10 @@ contract CertManager is ICertManager {
         bytes memory certificate,
         bytes32 certHash,
         bool ca,
-        VerifiedCert memory parent,
+        bytes32 parentCertHash,
         bytes memory signatureHints
     ) internal returns (VerifiedCert memory) {
+        VerifiedCert memory parent = _loadVerified(parentCertHash);
         if (certHash != ROOT_CA_CERT_HASH) {
             require(parent.pubKey.length > 0, "parent cert unverified");
             require(!_certificateExpired(parent.notAfter), "parent cert expired");
@@ -124,9 +128,27 @@ contract CertManager is ICertManager {
         if (cert.pubKey.length != 0) {
             require(!_certificateExpired(cert.notAfter), "cert expired");
             require(cert.ca == ca, "cert is not a CA");
+            if (certHash != ROOT_CA_CERT_HASH) {
+                require(verifiedParent[certHash] == parentCertHash, "parent cert mismatch");
+            }
             return cert;
         }
 
+        cert = _verifyUncachedCert(certificate, ca, parent, signatureHints);
+        _saveVerified(certHash, cert);
+        verifiedParent[certHash] = parentCertHash;
+
+        emit CertVerified(certHash);
+
+        return cert;
+    }
+
+    function _verifyUncachedCert(
+        bytes memory certificate,
+        bool ca,
+        VerifiedCert memory parent,
+        bytes memory signatureHints
+    ) internal view returns (VerifiedCert memory cert) {
         Asn1Ptr root = certificate.root();
         Asn1Ptr tbsCertPtr = certificate.firstChildOf(root);
         (uint64 notAfter, int64 maxPathLen, bytes32 issuerHash, bytes32 subjectHash, bytes memory pubKey) =
@@ -144,11 +166,6 @@ contract CertManager is ICertManager {
         cert = VerifiedCert({
             ca: ca, notAfter: notAfter, maxPathLen: maxPathLen, subjectHash: subjectHash, pubKey: pubKey
         });
-        _saveVerified(certHash, cert);
-
-        emit CertVerified(certHash);
-
-        return cert;
     }
 
     function _parseTbs(bytes memory certificate, Asn1Ptr ptr, bool ca)

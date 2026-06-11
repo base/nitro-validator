@@ -44,8 +44,9 @@ own document signature.
 
 1. **Cold phase — verify & cache the certificate chain** (once per chain). For each CA cert in the
    `cabundle`, then the leaf cert, compute the inverse hints off-chain and submit them:
-   - `certManager.verifyCACertWithHints(caCert, parentCertHash, hints)` (use `0` as the parent hash
-     for the cert signed by the pinned root)
+   - `certManager.verifyCACertWithHints(caCert, parentCertHash, hints)` (use
+     `ROOT_CA_CERT_HASH` / `keccak256(rootCert)` for the first non-root CA; `0` is only for the
+     pinned root itself)
    - `certManager.verifyClientCertWithHints(leafCert, parentCertHash, hints)`
 2. **Validation — verify the document signature.** Once the chain is cached:
    - `validator.validateAttestationWithHints(attestationTbs, signature, attestationHints)`
@@ -101,7 +102,7 @@ contract Validator {
 
         bytes32 pcr0 = attestationTbs.keccak(ptrs.pcrs[0]);
         require(pcr0 == PCR0, "invalid pcr0 in attestation");
-        require(ptrs.timestamp + MAX_AGE > block.timestamp, "attestation too old");
+        require(ptrs.timestamp / 1000 + MAX_AGE > block.timestamp, "attestation too old");
 
         bytes memory publicKey = attestationTbs.slice(ptrs.publicKey);
         // do something with the public key, user data, etc
@@ -132,8 +133,9 @@ additional submodules are required beyond `forge-std`.
 Verification proves an attestation is genuine; some properties are intentionally left to the
 integrator (see [docs](docs/hinted-p384-nitro-attestation.md#integrator-responsibilities-what-the-contract-does-not-enforce)):
 
-- **Freshness / replay** — the contract does not compare the attestation `timestamp` to
-  `block.timestamp` or match the `nonce` to a challenge. Enforce freshness yourself if you need it.
+- **Freshness / replay** — the contract does not compare the attestation `timestamp` (milliseconds)
+  to `block.timestamp` (seconds) or match the `nonce` to a challenge. Enforce freshness yourself if
+  you need it.
 - **Signature malleability** — low-S is not enforced (AWS does not emit low-S), so the malleable
   twin `(r, n-s)` also verifies. Never use the signature as a uniqueness key; dedupe on canonical
   attestation fields instead.

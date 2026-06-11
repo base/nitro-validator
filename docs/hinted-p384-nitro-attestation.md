@@ -11,7 +11,7 @@ P-384 curve (secp384r1). P-384 verification leans heavily on the EVM's MODEXP
 precompile, and that is exactly what the Fusaka upgrade reprices.
 
 - **Problem:** the Fusaka MODEXP repricing makes a standard on-chain P-384 verifier
-  far too expensive to land on an OP-Stack L2 such as Base.
+  far too expensive to land on an L2 such as Base.
 - **Idea:** the expensive step (modular inversion) is *hard to compute but easy to
   check*, so the caller supplies it as a verified **hint**.
 - **Result:** a full cold verification fits in **5 transactions, each ≤ ~13.8M gas**
@@ -358,7 +358,8 @@ document signature.
 Once the leaf and its CA chain are cached and unexpired, a later attestation signed by
 the same leaf is a **single transaction** (`validateAttestationWithHints`) carrying
 only the COSE signature hints. The cabundle certs are not re-verified — they are
-reloaded by `keccak256(cert)` identity and their cached metadata is re-checked.
+reloaded by `keccak256(cert)` identity, checked against their original cached parent,
+and their cached metadata is re-checked.
 
 Practical reuse cases:
 
@@ -368,9 +369,10 @@ Practical reuse cases:
 - **CA chain and leaf cached:** validate the document only → 1 transaction.
 
 **Cache reuse** is allowed when: the submitted DER hashes to a cached cert; the cert
-is unexpired (`notAfter ≥ block.timestamp`); the cached CA/client role matches; parent
-checks pass for non-root certs. The cache is global on-chain state — once any caller
-verifies a cert, others reuse it until expiry.
+is unexpired (`notAfter ≥ block.timestamp`); the cached CA/client role matches; and
+`parentCertHash` matches the parent used during cold verification. The cache is global
+on-chain state — once any caller verifies a cert, others reuse it until expiry, but
+only under the same parent binding.
 
 **Warm-only guard.** `validateAttestationWithHints` re-runs the cabundle checks with an
 *empty* hint stream. Cached certs return before signature verification; a missing cert
@@ -484,11 +486,10 @@ can never silently diverge.
 
 ## 10. Caveats and notes
 
-- **Calldata cost is separate from the gas above.** The tables in §7 are *execution*
-  gas. Each signature also carries ~27 KB of hint calldata, which on an OP-Stack L2
-  incurs an L1 data-availability fee on top of execution gas — budget for it
-  separately. It does not affect whether a transaction fits the per-transaction
-  execution-gas cap.
+- **Calldata contributes to transaction gas.** The tables in §7 are receipt gas and
+  include the intrinsic gas for the ~27 KB hint calldata carried by each signature.
+  On Base (as an L2), calldata also incurs an L1 data-availability fee on top of EVM
+  gas — budget for that separately.
 - **Acceptance rule is inherited unchanged.** The verifier accepts when
   `x_R mod n == r`, exactly as the upstream library, including its handling of the
   negligible (~2⁻¹⁹⁰) case where the recovered x-coordinate lies in `[n, p)`. Hinting
@@ -509,9 +510,10 @@ deliberately left to the caller and must be handled in the consuming contract:
 
 - **Freshness / anti-replay.** `validateAttestationWithHints` only checks that
   `timestamp` is non-zero and that `nonce` is within a size bound; it never compares
-  `timestamp` to `block.timestamp` nor matches `nonce` to a challenge. A valid
+  `timestamp` (milliseconds) to `block.timestamp` (seconds) nor matches `nonce` to a
+  challenge. A valid
   attestation can be replayed until its short-lived leaf certificate expires. If you
-  need freshness, compare `ptrs.timestamp` to `block.timestamp` and/or verify
+  need freshness, compare `ptrs.timestamp / 1000` to `block.timestamp` and/or verify
   `ptrs.nonce` against a value you issued.
 - **Signature malleability.** Low-S is intentionally not enforced (AWS does not
   guarantee low-S; see `CURVE_LOW_S_MAX` in `ECDSA384Curve.sol`), so for a valid
@@ -538,7 +540,8 @@ COSE hints with `tools/p384_hints.js attestation`; submits the final
 same cached chain and leaf. The script uses `vm.ffi` only because Foundry Solidity
 scripts cannot run the off-chain parsing and BigInt witness code in-process. In the
 production flow, the caller service prepares the same hints and ABI calldata before
-submitting ordinary transactions.
+submitting ordinary transactions. Run the demo with Foundry FFI enabled (`--ffi`);
+without it, Foundry disables `vm.ffi` by default.
 
 ---
 
