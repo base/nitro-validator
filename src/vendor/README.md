@@ -18,13 +18,17 @@ the code that is deployed — with no dependency on an external submodule or for
 The only imports either file makes are between these two vendored files; nothing else
 from `solidity-lib` is used by this repo.
 
-## The one local modification (audit focus)
+## Local modifications (audit focus)
 
-`ECDSA384.sol` carries a single functional change on top of the base commit:
-**"Add hinted P384 inverse verification"** — adding `verifyWithHints` /
-`verifyWithHintsConsumed` and the hint-consumption paths in `U384`
-(`initCallWithHints`, `_nextInverseHint`, the hinted branches of `moddivAssign` /
-`modinv`).
+`ECDSA384.sol` carries two functional changes on top of the base commit:
+
+- **"Add hinted P384 inverse verification"** — adding `verifyWithHints` /
+  `verifyWithHintsConsumed` and the hint-consumption paths in `U384`
+  (`initCallWithHints`, `_nextInverseHint`, the hinted branches of `moddivAssign` /
+  `modinv`).
+- **Strict public key coordinate bounds** — `_isOnCurve` rejects coordinates `>= p`,
+  not only `== p`, so non-canonical 48-byte field encodings cannot pass the curve
+  equation modulo `p`.
 
 The exact upstream diff is committed next to the file as
 [`ECDSA384.hinted.patch`](./ECDSA384.hinted.patch) so reviewers can see precisely

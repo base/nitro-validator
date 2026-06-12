@@ -291,12 +291,14 @@ Both moduli (`p` and `n`) are prime, so any nonzero element has a *unique* inver
   most cause a revert (wasted gas), never a false accept. (A non-canonical hint such
   as `inv + m` also passes the check and is harmless, since every use reduces mod `m`.)
 
-The equivalence anchor for this argument is that with hints **disabled** the code is
-identical to the upstream verifier; the hinted branches only *substitute a
-pre-verified value* for the same inverse the original computes.
+The equivalence anchor for this argument is that, aside from rejecting non-canonical
+public key coordinates, the hints-disabled code follows the upstream verifier; the
+hinted branches only *substitute a pre-verified value* for the same inverse the original
+computes.
 
 ### What a failed verification does
-- With hints **disabled**, behavior is identical to the original verifier.
+- With hints **disabled**, behavior is identical to the original verifier except that
+  non-canonical public key coordinates are rejected.
 - A *well-formed but invalid* signature consumes its full hint stream and the verify
   returns `false` normally.
 - A signature that fails an **early** guard (scalar bounds or the on-curve check)
@@ -471,9 +473,10 @@ The off-chain↔on-chain hint equivalence is checked under an FFI test (it shell
 the generator and compares streams byte-for-byte), so the generator and the contract
 can never silently diverge.
 
-**For auditors.** The entire trust delta versus the upstream library is the two
-`if (hintsEnabled)` branches shown in the appendix; the soundness argument is in §4
-(*Why this is sound*). Reviewers should confirm:
+**For auditors.** The main trust delta versus the upstream library is the two
+`if (hintsEnabled)` branches shown in the appendix; this repo also tightens public-key
+coordinate bounds to reject non-canonical field encodings. The hinting soundness
+argument is in §4 (*Why this is sound*). Reviewers should confirm:
 
 1. every supplied inverse is constrained by `b · inv ≡ 1` in the correct modulus
    **before** it is used;
@@ -481,7 +484,8 @@ can never silently diverge.
    with no crossover;
 3. the underflow and surplus guards together force the hint count to match exactly
    (no truncated or leftover hints);
-4. the hints-disabled path is byte-identical to the upstream verifier; and
+4. the hints-disabled path differs from upstream only by the stricter public-key
+   coordinate bounds; and
 5. the curve parameters (`p`, `n`, `G`, `a`, `b`, low-`s` bound) are correct.
 
 ## 10. Caveats and notes
@@ -494,9 +498,10 @@ can never silently diverge.
   `x_R mod n == r`, exactly as the upstream library, including its handling of the
   negligible (~2⁻¹⁹⁰) case where the recovered x-coordinate lies in `[n, p)`. Hinting
   does not alter this.
-- **Audit boundary.** Only the two inversion branches are new cryptographic code; the
-  rest of the verifier is the upstream library unchanged, and the certificate parser,
-  cache, and CBOR/COSE handling are the pre-existing validator logic.
+- **Audit boundary.** The hinted inversion branches are the primary new cryptographic
+  code; this repo also tightens public-key coordinate bounds versus upstream. The
+  certificate parser, cache, and CBOR/COSE handling are the pre-existing validator
+  logic.
 - **The generator is liveness-critical, not trust-critical.** A bug in the off-chain
   hint generator can only cause a revert (every value is re-checked on-chain), never a
   false accept — but correct hints are required to verify at all, so the generator
@@ -551,12 +556,11 @@ The hinted verifier is the upstream `ECDSA384` verifier from
 `dl-solarity/solidity-lib`, vendored into this repo at `src/vendor/ECDSA384.sol` (see
 `src/vendor/README.md` for provenance and the exact upstream diff in
 `src/vendor/ECDSA384.hinted.patch`) with **one operation — modular inversion — made
-hint-aware in two places**. Everything else (the Strauss–Shamir ladder, precompute
-table, on-curve check, scalar bounds, final `x_R == r`) is unchanged. When hints are
-disabled the code follows the original path, so the unhinted path is the equivalence
-anchor.
+hint-aware in two places**, plus stricter public-key coordinate bounds. Everything else
+(the Strauss–Shamir ladder, precompute table, scalar bounds, final `x_R == r`) is
+unchanged.
 
-The entire trust delta is these two `if (hintsEnabled)` branches.
+The hinting trust delta is these two `if (hintsEnabled)` branches.
 
 **Point arithmetic — inverses mod `p`** (`moddivAssign`):
 
@@ -613,12 +617,15 @@ no-truncation guard:
 +    }
 ```
 
+The public-key on-curve guard is also tightened to reject non-canonical coordinates
+`>= p`, not only coordinates equal to `p`.
+
 The remaining changes are **plumbing**, not logic, and none can affect the
 accept/reject decision:
 
 - a few words of scratch memory holding the hint stream pointer, length, cursor, and
   an enabled flag (`initCall` / `initCallWithHints`);
-- the `verify` entrypoint split into `verify` (no hints, identical to the original)
+- the `verify` entrypoint split into `verify` (no hints)
   and `verifyWithHints`, which adds the surplus guard
   `require(consumed == length, "unused inverse hints")`.
 

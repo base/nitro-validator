@@ -75,6 +75,16 @@ index 9e43756..053803b 100644
          }
      }
  
+@@ -168,7 +202,10 @@ library ECDSA384 {
+     ) private view returns (bool) {
+         unchecked {
+-            if (U384.eqInteger(x, 0) || U384.eq(x, p) || U384.eqInteger(y, 0) || U384.eq(y, p)) {
++            if (
++                U384.eqInteger(x, 0) || U384.cmp(x, p) >= 0 || U384.eqInteger(y, 0) || U384.cmp(y, p) >= 0
++            ) {
+                 return false;
+             }
+
 @@ -486,11 +520,14 @@ library ECDSA384 {
  library U384 {
      uint256 private constant SHORT_ALLOCATION = 64;

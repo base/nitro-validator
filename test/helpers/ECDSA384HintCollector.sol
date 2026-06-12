@@ -186,8 +186,8 @@ library ECDSA384HintCollectorLib {
     function _isOnCurve(uint256 call, uint256 p, uint256 a, uint256 b, uint256 x, uint256 y) private returns (bool) {
         unchecked {
             if (
-                U384HintCollector.eqInteger(x, 0) || U384HintCollector.eq(x, p) || U384HintCollector.eqInteger(y, 0)
-                    || U384HintCollector.eq(y, p)
+                U384HintCollector.eqInteger(x, 0) || U384HintCollector.cmp(x, p) >= 0
+                    || U384HintCollector.eqInteger(y, 0) || U384HintCollector.cmp(y, p) >= 0
             ) {
                 return false;
             }
