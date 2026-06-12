@@ -3,10 +3,9 @@ pragma solidity ^0.8.15;
 
 import {Sha2Ext} from "./Sha2Ext.sol";
 import {Asn1Decode, Asn1Ptr, LibAsn1Ptr} from "./Asn1Decode.sol";
-import {ECDSA384} from "@solarity/libs/crypto/ECDSA384.sol";
-import {ECDSA384Curve} from "./ECDSA384Curve.sol";
 import {LibBytes} from "./LibBytes.sol";
 import {ICertManager} from "./ICertManager.sol";
+import {IP384Verifier} from "./IP384Verifier.sol";
 
 // adapted from https://github.com/marlinprotocol/NitroProver/blob/f1d368d1f172ad3a55cd2aaaa98ad6a6e7dcde9d/src/CertManager.sol
 
@@ -47,8 +46,14 @@ contract CertManager is ICertManager {
 
     // certHash -> VerifiedCert
     mapping(bytes32 => bytes) public verified;
+    // certHash -> parent cert hash used during cold verification
+    mapping(bytes32 => bytes32) internal verifiedParent;
 
-    constructor() {
+    IP384Verifier public immutable p384Verifier;
+
+    constructor(IP384Verifier p384Verifier_) {
+        require(address(p384Verifier_) != address(0), "missing P384 verifier");
+        p384Verifier = p384Verifier_;
         _saveVerified(
             ROOT_CA_CERT_HASH,
             VerifiedCert({
@@ -61,23 +66,59 @@ contract CertManager is ICertManager {
         );
     }
 
-    function verifyCACert(bytes memory cert, bytes32 parentCertHash) external returns (bytes32) {
+    /// @notice DEPRECATED — always reverts. The fully on-chain (non-hinted) path is too expensive
+    ///         post-Fusaka and has been removed. Use {verifyCACertWithHints}.
+    function verifyCACert(bytes memory, bytes32) external pure returns (bytes32) {
+        revert("use hinted cert verification");
+    }
+
+    /// @notice DEPRECATED — always reverts. Use {verifyClientCertWithHints}.
+    function verifyClientCert(bytes memory, bytes32) external pure returns (VerifiedCert memory) {
+        revert("use hinted cert verification");
+    }
+
+    /// @notice Verify a CA certificate against its (already-cached) parent and cache the result.
+    /// @dev Idempotent with a cache short-circuit: if `cert` is already verified and unexpired, the
+    ///      cached record is returned and `signatureHints` is ignored, but `parentCertHash` must
+    ///      match the parent used during cold verification. On a cold cert, `signatureHints` must
+    ///      contain the real off-chain inverse hints for the cert signature; they are re-verified
+    ///      on-chain, so a wrong hint only reverts. Pass 0 only when submitting the pinned root;
+    ///      otherwise pass the cached parent cert hash.
+    function verifyCACertWithHints(bytes memory cert, bytes32 parentCertHash, bytes memory signatureHints)
+        external
+        returns (bytes32)
+    {
         bytes32 certHash = keccak256(cert);
-        _verifyCert(cert, certHash, true, _loadVerified(parentCertHash));
+        _verifyCert(cert, certHash, true, parentCertHash, signatureHints);
         return certHash;
     }
 
-    function verifyClientCert(bytes memory cert, bytes32 parentCertHash) external returns (VerifiedCert memory) {
-        return _verifyCert(cert, keccak256(cert), false, _loadVerified(parentCertHash));
-    }
-
-    function _verifyCert(bytes memory certificate, bytes32 certHash, bool ca, VerifiedCert memory parent)
-        internal
+    /// @notice Verify a leaf (client) certificate against its (already-cached) parent and cache it.
+    /// @dev Same cache short-circuit and hint semantics as {verifyCACertWithHints}: on a cold cert
+    ///      `signatureHints` must hold the real off-chain inverse hints (re-verified on-chain); on a
+    ///      cached cert they are ignored, but `parentCertHash` must match the cold verification parent.
+    function verifyClientCertWithHints(bytes memory cert, bytes32 parentCertHash, bytes memory signatureHints)
+        external
         returns (VerifiedCert memory)
     {
+        return _verifyCert(cert, keccak256(cert), false, parentCertHash, signatureHints);
+    }
+
+    function loadVerified(bytes32 certHash) external view returns (VerifiedCert memory) {
+        return _loadVerified(certHash);
+    }
+
+    function _verifyCert(
+        bytes memory certificate,
+        bytes32 certHash,
+        bool ca,
+        bytes32 parentCertHash,
+        bytes memory signatureHints
+    ) internal returns (VerifiedCert memory) {
+        VerifiedCert memory parent = _loadVerified(parentCertHash);
         if (certHash != ROOT_CA_CERT_HASH) {
             require(parent.pubKey.length > 0, "parent cert unverified");
-            require(parent.notAfter >= block.timestamp, "parent cert expired");
+            require(!_certificateExpired(parent.notAfter), "parent cert expired");
             require(parent.ca, "parent cert is not a CA");
             require(!ca || parent.maxPathLen != 0, "maxPathLen exceeded");
         }
@@ -85,11 +126,29 @@ contract CertManager is ICertManager {
         // skip verification if already verified
         VerifiedCert memory cert = _loadVerified(certHash);
         if (cert.pubKey.length != 0) {
-            require(cert.notAfter >= block.timestamp, "cert expired");
+            require(!_certificateExpired(cert.notAfter), "cert expired");
             require(cert.ca == ca, "cert is not a CA");
+            if (certHash != ROOT_CA_CERT_HASH) {
+                require(verifiedParent[certHash] == parentCertHash, "parent cert mismatch");
+            }
             return cert;
         }
 
+        cert = _verifyUncachedCert(certificate, ca, parent, signatureHints);
+        _saveVerified(certHash, cert);
+        verifiedParent[certHash] = parentCertHash;
+
+        emit CertVerified(certHash);
+
+        return cert;
+    }
+
+    function _verifyUncachedCert(
+        bytes memory certificate,
+        bool ca,
+        VerifiedCert memory parent,
+        bytes memory signatureHints
+    ) internal view returns (VerifiedCert memory cert) {
         Asn1Ptr root = certificate.root();
         Asn1Ptr tbsCertPtr = certificate.firstChildOf(root);
         (uint64 notAfter, int64 maxPathLen, bytes32 issuerHash, bytes32 subjectHash, bytes memory pubKey) =
@@ -102,16 +161,11 @@ contract CertManager is ICertManager {
             maxPathLen = parent.maxPathLen - 1;
         }
 
-        _verifyCertSignature(certificate, tbsCertPtr, parent.pubKey);
+        _verifyCertSignatureWithHints(certificate, tbsCertPtr, parent.pubKey, signatureHints);
 
         cert = VerifiedCert({
             ca: ca, notAfter: notAfter, maxPathLen: maxPathLen, subjectHash: subjectHash, pubKey: pubKey
         });
-        _saveVerified(certHash, cert);
-
-        emit CertVerified(certHash);
-
-        return cert;
     }
 
     function _parseTbs(bytes memory certificate, Asn1Ptr ptr, bool ca)
@@ -191,7 +245,11 @@ contract CertManager is ICertManager {
         notAfter = uint64(certificate.timestampAt(notAfterPtr));
 
         require(notBefore <= block.timestamp, "certificate not valid yet");
-        require(notAfter >= block.timestamp, "certificate not valid anymore");
+        require(!_certificateExpired(notAfter), "certificate not valid anymore");
+    }
+
+    function _certificateExpired(uint256 notAfter) internal view virtual returns (bool) {
+        return notAfter < block.timestamp;
     }
 
     function _verifyExtensions(bytes memory certificate, Asn1Ptr extensionsPtr, bool ca)
@@ -271,12 +329,26 @@ contract CertManager is ICertManager {
         }
     }
 
-    function _verifyCertSignature(bytes memory certificate, Asn1Ptr ptr, bytes memory pubKey) internal view {
+    function _verifyCertSignatureWithHints(
+        bytes memory certificate,
+        Asn1Ptr ptr,
+        bytes memory pubKey,
+        bytes memory signatureHints
+    ) internal view {
         Asn1Ptr sigAlgoPtr = certificate.nextSiblingOf(ptr);
         require(certificate.keccak(sigAlgoPtr.content(), sigAlgoPtr.length()) == CERT_ALGO_OID, "invalid cert sig algo");
 
         bytes memory hash = Sha2Ext.sha384(certificate, ptr.header(), ptr.totalLength());
+        bytes memory sigPacked = _certSignature(certificate, sigAlgoPtr);
 
+        require(p384Verifier.verifyP384SignatureWithHints(hash, sigPacked, pubKey, signatureHints), "invalid sig");
+    }
+
+    function _certSignature(bytes memory certificate, Asn1Ptr sigAlgoPtr)
+        internal
+        pure
+        returns (bytes memory sigPacked)
+    {
         Asn1Ptr sigPtr = certificate.nextSiblingOf(sigAlgoPtr);
         Asn1Ptr sigBPtr = certificate.bitstring(sigPtr);
         Asn1Ptr sigRoot = certificate.rootOf(sigBPtr);
@@ -284,13 +356,7 @@ contract CertManager is ICertManager {
         Asn1Ptr sigSPtr = certificate.nextSiblingOf(sigRPtr);
         (uint128 rhi, uint256 rlo) = certificate.uint384At(sigRPtr);
         (uint128 shi, uint256 slo) = certificate.uint384At(sigSPtr);
-        bytes memory sigPacked = abi.encodePacked(rhi, rlo, shi, slo);
-
-        _verifySignature(pubKey, hash, sigPacked);
-    }
-
-    function _verifySignature(bytes memory pubKey, bytes memory hash, bytes memory sig) internal view {
-        require(ECDSA384.verify(ECDSA384Curve.p384(), hash, sig, pubKey), "invalid sig");
+        sigPacked = abi.encodePacked(rhi, rlo, shi, slo);
     }
 
     function _saveVerified(bytes32 certHash, VerifiedCert memory cert) internal {

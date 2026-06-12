@@ -5,6 +5,8 @@ import {Test} from "forge-std/Test.sol";
 import {CborDecode, CborElement, LibCborElement} from "../src/CborDecode.sol";
 import {NitroValidator} from "../src/NitroValidator.sol";
 import {ICertManager} from "../src/ICertManager.sol";
+import {IP384Verifier} from "../src/IP384Verifier.sol";
+import {P384Verifier} from "../src/P384Verifier.sol";
 
 // ──────────────────────────────────────────────────────────────
 //  CBOR constants (RFC 8949)
@@ -76,7 +78,7 @@ contract CborDecodeHarness {
 
 /// @notice Exposes NitroValidator._parseAttestation (internal pure) for testing.
 contract NitroValidatorHarness is NitroValidator {
-    constructor(ICertManager cm) NitroValidator(cm) {}
+    constructor(ICertManager cm, IP384Verifier p384Verifier) NitroValidator(cm, p384Verifier) {}
 
     function parseAttestation(bytes memory attestationTbs) external pure returns (Ptrs memory) {
         return _parseAttestation(attestationTbs);
@@ -90,6 +92,22 @@ contract StubCertManager is ICertManager {
     }
 
     function verifyClientCert(bytes memory, bytes32) external pure returns (VerifiedCert memory v) {
+        return v;
+    }
+
+    function verifyCACertWithHints(bytes memory, bytes32, bytes memory) external pure returns (bytes32) {
+        return bytes32(0);
+    }
+
+    function verifyClientCertWithHints(bytes memory, bytes32, bytes memory)
+        external
+        pure
+        returns (VerifiedCert memory v)
+    {
+        return v;
+    }
+
+    function loadVerified(bytes32) external pure returns (VerifiedCert memory v) {
         return v;
     }
 }
@@ -178,7 +196,7 @@ contract NitroValidatorIndefiniteLengthTest is Test {
     NitroValidatorHarness validator;
 
     function setUp() public {
-        validator = new NitroValidatorHarness(ICertManager(address(new StubCertManager())));
+        validator = new NitroValidatorHarness(ICertManager(address(new StubCertManager())), new P384Verifier());
     }
 
     // ── Shared assertion helpers ──────────────────────────────

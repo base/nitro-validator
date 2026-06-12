@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.15;
 
-import {ECDSA384} from "@solarity/libs/crypto/ECDSA384.sol";
+import {ECDSA384} from "./vendor/ECDSA384.sol";
 
 library ECDSA384Curve {
     // ECDSA384 curve parameters (NIST P-384)
@@ -17,7 +17,13 @@ library ECDSA384Curve {
         hex"fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffeffffffff0000000000000000ffffffff";
     bytes public constant CURVE_N =
         hex"ffffffffffffffffffffffffffffffffffffffffffffffffc7634d81f4372ddf581a0db248b0a77aecec196accc52973";
-    // use n-1 for lowSmax, which allows s-values above n/2
+    // Upper bound for the accepted `s` value. Set to n-1 (NOT n/2) on purpose: AWS Nitro does not
+    // guarantee low-S signatures, so enforcing low-S would reject legitimate attestations. The
+    // consequence is that ECDSA signature malleability is NOT prevented at this layer — for a valid
+    // signature (r, s) the twin (r, n-s) also verifies. This cannot forge a signature AWS never
+    // produced, but integrators MUST NOT treat the raw signature (or attestationTbs+signature, or
+    // its hash) as a unique identifier; dedupe on a canonical attestation field (e.g. moduleID +
+    // timestamp + nonce) instead.
     bytes public constant CURVE_LOW_S_MAX =
         hex"ffffffffffffffffffffffffffffffffffffffffffffffffc7634d81f4372ddf581a0db248b0a77aecec196accc52972";
 

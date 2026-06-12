@@ -4,8 +4,7 @@ pragma solidity ^0.8.15;
 import {ICertManager} from "./ICertManager.sol";
 import {Sha2Ext} from "./Sha2Ext.sol";
 import {CborDecode, CborElement, LibCborElement} from "./CborDecode.sol";
-import {ECDSA384} from "@solarity/libs/crypto/ECDSA384.sol";
-import {ECDSA384Curve} from "./ECDSA384Curve.sol";
+import {IP384Verifier} from "./IP384Verifier.sol";
 import {LibBytes} from "./LibBytes.sol";
 
 // adapted from https://github.com/marlinprotocol/NitroProver/blob/f1d368d1f172ad3a55cd2aaaa98ad6a6e7dcde9d/src/NitroProver.sol
@@ -41,9 +40,13 @@ contract NitroValidator {
     }
 
     ICertManager public immutable certManager;
+    IP384Verifier public immutable p384Verifier;
 
-    constructor(ICertManager _certManager) {
+    constructor(ICertManager _certManager, IP384Verifier _p384Verifier) {
+        require(address(_certManager) != address(0), "missing cert manager");
+        require(address(_p384Verifier) != address(0), "missing P384 verifier");
         certManager = _certManager;
+        p384Verifier = _p384Verifier;
     }
 
     function decodeAttestationTbs(bytes memory attestation)
@@ -70,7 +73,40 @@ contract NitroValidator {
         signature = attestation.slice(signaturePtr.start(), signaturePtr.length());
     }
 
-    function validateAttestation(bytes memory attestationTbs, bytes memory signature) public returns (Ptrs memory) {
+    /// @notice DEPRECATED — always reverts. The fully on-chain (non-hinted) path is too expensive
+    ///         post-Fusaka and has been removed. Use {validateAttestationWithHints}.
+    function validateAttestation(bytes memory, bytes memory) public pure returns (Ptrs memory) {
+        revert("use hinted attestation verification");
+    }
+
+    /// @notice Validate a Nitro attestation document, supplying off-chain inverse hints for the
+    ///         final document signature.
+    /// @dev PRECONDITION: the attestation's entire certificate bundle (every CA cert plus the leaf
+    ///      cert) MUST already be verified and cached, via prior calls to
+    ///      `CertManager.verifyCACertWithHints` / `verifyClientCertWithHints` with real hints.
+    ///      This function re-walks the bundle with EMPTY hints (see `verifyCachedCertBundle`),
+    ///      which only succeeds on already-cached certs. If any cert is uncached it reverts with
+    ///      "inverse hint underflow" — even when `attestationSigHints` itself is valid.
+    /// @dev INTEGRATOR RESPONSIBILITIES — this function proves the attestation is genuine and
+    ///      well-formed, but deliberately does NOT enforce:
+    ///      - Freshness / anti-replay: `ptrs.timestamp` is only checked to be non-zero and `nonce`
+    ///        is only length-bounded. A valid attestation can be replayed until its leaf cert
+    ///        expires. Callers that need freshness must compare `ptrs.timestamp / 1000` to
+    ///        `block.timestamp` and/or match `ptrs.nonce` against a challenge they issued.
+    ///      - Signature non-malleability: low-S is not enforced (see {ECDSA384Curve.CURVE_LOW_S_MAX}),
+    ///        so do not use `signature` (or its hash) as a uniqueness key — dedupe on attestation
+    ///        fields instead.
+    ///      - PCR / moduleID policy: the caller must check `ptrs.pcrs` / `ptrs.moduleID` against the
+    ///        enclave image(s) they trust.
+    /// @param attestationTbs The COSE Sign1 to-be-signed bytes (from `decodeAttestationTbs`).
+    /// @param signature The 96-byte (r||s) P-384 attestation signature.
+    /// @param attestationSigHints Off-chain inverse hints for the attestation signature; re-verified
+    ///        on-chain, so a wrong hint only reverts and can never forge a valid signature.
+    function validateAttestationWithHints(
+        bytes memory attestationTbs,
+        bytes memory signature,
+        bytes memory attestationSigHints
+    ) public returns (Ptrs memory) {
         Ptrs memory ptrs = _parseAttestation(attestationTbs);
 
         require(ptrs.moduleID.length() > 0, "no module id");
@@ -98,22 +134,30 @@ contract NitroValidator {
             cabundle[i] = attestationTbs.slice(ptrs.cabundle[i]);
         }
 
-        ICertManager.VerifiedCert memory parent = verifyCertBundle(cert, cabundle);
+        ICertManager.VerifiedCert memory parent = verifyCachedCertBundle(cert, cabundle);
         bytes memory hash = Sha2Ext.sha384(attestationTbs, 0, attestationTbs.length);
-        _verifySignature(parent.pubKey, hash, signature);
+        require(
+            p384Verifier.verifyP384SignatureWithHints(hash, signature, parent.pubKey, attestationSigHints),
+            "invalid sig"
+        );
 
         return ptrs;
     }
 
-    function verifyCertBundle(bytes memory certificate, bytes[] memory cabundle)
+    /// @dev Re-walks the cert bundle (cabundle + leaf) passing EMPTY hint streams, relying on the
+    ///      CertManager cache short-circuit: an already-verified, unexpired cert returns its cached
+    ///      record without re-checking the signature (and so needs no hints). If a cert is NOT
+    ///      cached, signature verification is attempted against an empty hint stream and reverts
+    ///      with "inverse hint underflow". Callers must therefore pre-cache the whole bundle first.
+    function verifyCachedCertBundle(bytes memory certificate, bytes[] memory cabundle)
         internal
         returns (ICertManager.VerifiedCert memory)
     {
         bytes32 parentHash;
         for (uint256 i = 0; i < cabundle.length; i++) {
-            parentHash = certManager.verifyCACert(cabundle[i], parentHash);
+            parentHash = certManager.verifyCACertWithHints(cabundle[i], parentHash, "");
         }
-        return certManager.verifyClientCert(certificate, parentHash);
+        return certManager.verifyClientCertWithHints(certificate, parentHash, "");
     }
 
     function _constructAttestationTbs(
@@ -202,9 +246,5 @@ contract NitroValidator {
         }
 
         return ptrs;
-    }
-
-    function _verifySignature(bytes memory pubKey, bytes memory hash, bytes memory sig) internal view {
-        require(ECDSA384.verify(ECDSA384Curve.p384(), hash, sig, pubKey), "invalid sig");
     }
 }
