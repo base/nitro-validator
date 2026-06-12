@@ -162,7 +162,7 @@ function collectAttestationHintBytes(attestation, leafPubKey) {
 }
 
 function isOnCurve(x, y) {
-  if (x === 0n || x === P || y === 0n || y === P) {
+  if (x === 0n || x >= P || y === 0n || y >= P) {
     return false;
   }
 

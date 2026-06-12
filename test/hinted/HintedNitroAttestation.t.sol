@@ -273,6 +273,24 @@ contract HintedNitroAttestationTest is Test {
         assertFalse(p384Verifier.verifyP384SignatureWithHints(hash, abi.encodePacked(one48, max48), pubKey, ""));
     }
 
+    function test_P384VerifierRejectsNonCanonicalPubKeyCoordinate() public view {
+        bytes memory hash = new bytes(48);
+        bytes memory one48 = new bytes(48);
+        one48[47] = 0x01;
+
+        // x = p + 2 fits in 48 bytes and reduces to a valid P-384 x-coordinate modulo p.
+        bytes memory nonCanonicalX =
+            hex"fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffeffffffff000000000000000100000001";
+        bytes memory y =
+            hex"8cdeadbbd04911a3c1931e26df3fa6439dca9c7eb286fbd46fc319f0e2bb780232baf57825fc0c1912ada2fefe84024c";
+
+        assertFalse(
+            p384Verifier.verifyP384SignatureWithHints(
+                hash, abi.encodePacked(one48, one48), abi.encodePacked(nonCanonicalX, y), ""
+            )
+        );
+    }
+
     function test_OffchainWitnessGeneratorMatchesSolidityCollector() public {
         if (!vm.envOr("NITRO_RUN_FFI", false)) {
             console.log("==== OFFCHAIN WITNESS GENERATOR ====");
