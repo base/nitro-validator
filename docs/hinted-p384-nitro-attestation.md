@@ -437,7 +437,7 @@ Runtime sizes (`forge build --sizes`); EIP-170 limit is 24,576 bytes:
 | contract | runtime size | margin |
 |----------|-------------:|-------:|
 | `P384Verifier` | 7,805 | 16,771 |
-| `CertManager` | 19,394 | 5,182 |
+| `CertManager` | 19,620 | 4,956 |
 | `NitroValidator` | 14,062 | 10,514 |
 
 (Test-only helper contracts are not part of the deployable contract set.)
