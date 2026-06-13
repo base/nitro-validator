@@ -205,6 +205,50 @@ contract HintedNitroAttestationTest is Test {
         assertTrue(certManager.revoked(certHashes[1]));
     }
 
+    function test_CertManagerRootRevocationRequiresOwner() public {
+        address newRevoker = address(0xBEEF);
+        certManager.setRevoker(newRevoker);
+        bytes32 rootHash = certManager.ROOT_CA_CERT_HASH();
+
+        vm.prank(newRevoker);
+        vm.expectRevert("not owner");
+        certManager.revokeCert(rootHash);
+        assertFalse(certManager.revoked(rootHash));
+
+        bytes32[] memory certHashes = new bytes32[](2);
+        certHashes[0] = keccak256("non-root cert");
+        certHashes[1] = rootHash;
+
+        vm.prank(newRevoker);
+        vm.expectRevert("not owner");
+        certManager.revokeCerts(certHashes);
+        assertFalse(certManager.revoked(certHashes[0]));
+        assertFalse(certManager.revoked(rootHash));
+
+        certManager.revokeCert(rootHash);
+        assertTrue(certManager.revoked(rootHash));
+    }
+
+    function test_HintedCACertRejectsTrailingBytes() public {
+        bytes memory attestation = _repairMissingPublicKeyBytes(_decodeBase64(_realAttestationB64()));
+        (bytes memory attestationTbs,) = validator.decodeAttestationTbs(attestation);
+        NitroValidator.Ptrs memory ptrs = parser.parseAttestation(attestationTbs);
+        (bytes memory caCert, bytes32 parentHash,) = _firstNonRootCA(attestationTbs, ptrs);
+
+        vm.expectRevert("invalid cert length");
+        certManager.verifyCACertWithHints(abi.encodePacked(caCert, bytes1(0x00)), parentHash, "");
+    }
+
+    function test_HintedCACertRejectsTrailingFieldInsideCertificateSequence() public {
+        bytes memory attestation = _repairMissingPublicKeyBytes(_decodeBase64(_realAttestationB64()));
+        (bytes memory attestationTbs,) = validator.decodeAttestationTbs(attestation);
+        NitroValidator.Ptrs memory ptrs = parser.parseAttestation(attestationTbs);
+        (bytes memory caCert, bytes32 parentHash,) = _firstNonRootCA(attestationTbs, ptrs);
+
+        vm.expectRevert("trailing cert fields");
+        certManager.verifyCACertWithHints(_appendInsideOuterSequence(caCert, bytes1(0x00)), parentHash, "");
+    }
+
     function test_HintedCACertRejectsRevokedColdCert() public {
         bytes memory attestation = _repairMissingPublicKeyBytes(_decodeBase64(_realAttestationB64()));
         (bytes memory attestationTbs,) = validator.decodeAttestationTbs(attestation);
@@ -913,6 +957,17 @@ contract HintedNitroAttestationTest is Test {
             output[i] = input[i];
         }
         output[index] = bytes1(uint8(output[index]) ^ 1);
+    }
+
+    function _appendInsideOuterSequence(bytes memory der, bytes1 value) internal pure returns (bytes memory output) {
+        require(der.length >= 4 && der[0] == 0x30 && der[1] == 0x82, "test: expected long sequence");
+        uint256 length = uint256(uint8(der[2])) << 8 | uint8(der[3]);
+        require(length + 4 == der.length, "test: unexpected sequence length");
+        length += 1;
+
+        output = abi.encodePacked(der, value);
+        output[2] = bytes1(uint8(length >> 8));
+        output[3] = bytes1(uint8(length));
     }
 
     function _repairMissingPublicKeyBytes(bytes memory attestation) internal pure returns (bytes memory repaired) {

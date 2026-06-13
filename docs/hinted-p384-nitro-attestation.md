@@ -384,16 +384,28 @@ flow. This implementation keeps CRL parsing off-chain and exposes an operational
 revocation hook on-chain:
 
 - the `CertManager` deployer starts as both `owner` and `revoker`;
-- the owner can transfer ownership, rotate the revoker, and undo accidental
-  revocations with `unrevokeCert`;
-- the revoker can call `revokeCert` / `revokeCerts` for AWS certificate hashes after
-  checking AWS CRLs off-chain.
+- the owner can transfer ownership, rotate the revoker, undo accidental revocations
+  with `unrevokeCert`, and revoke `ROOT_CA_CERT_HASH` as an emergency global halt;
+- the revoker can call `revokeCert` / `revokeCerts` for non-root AWS certificate hashes
+  after checking AWS CRLs off-chain.
+
+Revocation keys are byte-identity hashes: `keccak256(certBytes)`, where `certBytes`
+are the exact X.509 DER bytes submitted to `verifyCACertWithHints` /
+`verifyClientCertWithHints`. AWS CRLs identify certificates by issuer and serial, so
+operators must resolve CRL entries to the exact submitted certificate bytes off-chain
+before submitting revocation transactions. Cold verification rejects certificate byte
+strings whose outer ASN.1 certificate object does not consume all submitted bytes, or
+whose certificate sequence contains fields after the signature.
 
 Revoked certs are rejected during cold verification, cached reuse, and warm attestation
 bundle re-walks. Parent-chain revocation is also enforced for cached intermediates, so a
 cached descendant cannot keep verifying through an ancestor that was later revoked.
 Revocation is checked independently of `notAfter`, so a revoked cert is untrusted even if
 its X.509 validity period has not expired.
+
+`loadVerified` is intentionally a raw cache read. A non-empty return value means the cert
+metadata was cached previously; it does not imply the cert is currently trusted, unexpired,
+or unrevoked.
 
 **Warm-only guard.** `validateAttestationWithHints` re-runs the cabundle checks with an
 *empty* hint stream. Cached certs return before signature verification; a missing cert
@@ -458,7 +470,7 @@ Runtime sizes (`forge build --sizes`); EIP-170 limit is 24,576 bytes:
 | contract | runtime size | margin |
 |----------|-------------:|-------:|
 | `P384Verifier` | 7,805 | 16,771 |
-| `CertManager` | 21,518 | 3,058 |
+| `CertManager` | 21,849 | 2,727 |
 | `NitroValidator` | 14,062 | 10,514 |
 
 (Test-only helper contracts are not part of the deployable contract set.)
@@ -549,8 +561,8 @@ deliberately left to the caller and must be handled in the consuming contract:
   `moduleID`; deciding which enclave images you trust is application policy.
 - **CRL monitoring.** `CertManager` enforces certificate hashes that have been marked
   revoked on-chain, but it does not fetch or parse AWS CRLs. A trusted off-chain
-  operator must monitor AWS CRLs and submit `revokeCert` / `revokeCerts` transactions
-  promptly.
+  operator must monitor AWS CRLs, map issuer/serial entries to exact submitted
+  certificate-byte hashes, and submit `revokeCert` / `revokeCerts` transactions promptly.
 
 ## 11. On-chain demo
 
