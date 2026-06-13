@@ -14,6 +14,10 @@ All notable changes to this project are documented here. The format is based on
 ### Changed
 - Certificate verification and cached reuse now reject revoked certificates and revoked cached
   parent-chain ancestors independently of `notAfter`.
+- Root certificate revocation is owner-only, while non-root revocation remains delegated to the
+  revoker role.
+- Cold certificate verification rejects submitted cert bytes with trailing data or fields after the
+  signature, keeping revocation keys aligned with the parsed certificate bytes.
 
 ## [2.0.0-rc.1] - 2026-06-09
 

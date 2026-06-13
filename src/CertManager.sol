@@ -63,11 +63,6 @@ contract CertManager is ICertManager {
         _;
     }
 
-    modifier onlyRevoker() {
-        _onlyRevoker();
-        _;
-    }
-
     function _onlyOwner() internal view {
         require(msg.sender == owner, "not owner");
     }
@@ -133,6 +128,9 @@ contract CertManager is ICertManager {
         return _verifyCert(cert, keccak256(cert), false, parentCertHash, signatureHints);
     }
 
+    /// @notice Return raw cached certificate metadata without current trust checks.
+    /// @dev A non-empty return value only means the cert was cached previously. It may now be
+    ///      expired or revoked; use the verification entrypoints for trust-aware reuse.
     function loadVerified(bytes32 certHash) external view returns (VerifiedCert memory) {
         return _loadVerified(certHash);
     }
@@ -153,12 +151,14 @@ contract CertManager is ICertManager {
         revoker = newRevoker;
     }
 
-    function revokeCert(bytes32 certHash) external onlyRevoker {
+    function revokeCert(bytes32 certHash) external {
+        _requireCanRevoke(certHash);
         _revokeCert(certHash);
     }
 
-    function revokeCerts(bytes32[] calldata certHashes) external onlyRevoker {
+    function revokeCerts(bytes32[] calldata certHashes) external {
         for (uint256 i = 0; i < certHashes.length; ++i) {
+            _requireCanRevoke(certHashes[i]);
             _revokeCert(certHashes[i]);
         }
     }
@@ -171,6 +171,14 @@ contract CertManager is ICertManager {
     function _revokeCert(bytes32 certHash) internal {
         revoked[certHash] = true;
         emit CertRevoked(certHash);
+    }
+
+    function _requireCanRevoke(bytes32 certHash) internal view {
+        if (certHash == ROOT_CA_CERT_HASH) {
+            _onlyOwner();
+        } else {
+            _onlyRevoker();
+        }
     }
 
     function _requireNotRevoked(bytes32 certHash) internal view {
@@ -232,6 +240,7 @@ contract CertManager is ICertManager {
         bytes memory signatureHints
     ) internal view returns (VerifiedCert memory cert) {
         Asn1Ptr root = certificate.root();
+        require(root.totalLength() == certificate.length, "invalid cert length");
         Asn1Ptr tbsCertPtr = certificate.firstChildOf(root);
         (uint64 notAfter, int64 maxPathLen, bytes32 issuerHash, bytes32 subjectHash, bytes memory pubKey) =
             _parseTbs(certificate, tbsCertPtr, ca);
@@ -419,19 +428,16 @@ contract CertManager is ICertManager {
     ) internal view {
         Asn1Ptr sigAlgoPtr = certificate.nextSiblingOf(ptr);
         require(certificate.keccak(sigAlgoPtr.content(), sigAlgoPtr.length()) == CERT_ALGO_OID, "invalid cert sig algo");
+        Asn1Ptr sigPtr = certificate.nextSiblingOf(sigAlgoPtr);
+        require(sigPtr.header() + sigPtr.totalLength() == certificate.length, "trailing cert fields");
 
         bytes memory hash = Sha2Ext.sha384(certificate, ptr.header(), ptr.totalLength());
-        bytes memory sigPacked = _certSignature(certificate, sigAlgoPtr);
+        bytes memory sigPacked = _certSignature(certificate, sigPtr);
 
         require(p384Verifier.verifyP384SignatureWithHints(hash, sigPacked, pubKey, signatureHints), "invalid sig");
     }
 
-    function _certSignature(bytes memory certificate, Asn1Ptr sigAlgoPtr)
-        internal
-        pure
-        returns (bytes memory sigPacked)
-    {
-        Asn1Ptr sigPtr = certificate.nextSiblingOf(sigAlgoPtr);
+    function _certSignature(bytes memory certificate, Asn1Ptr sigPtr) internal pure returns (bytes memory sigPacked) {
         Asn1Ptr sigBPtr = certificate.bitstring(sigPtr);
         Asn1Ptr sigRoot = certificate.rootOf(sigBPtr);
         Asn1Ptr sigRPtr = certificate.firstChildOf(sigRoot);

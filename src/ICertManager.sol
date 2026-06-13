@@ -26,6 +26,7 @@ interface ICertManager {
         external
         returns (VerifiedCert memory);
 
+    /// @notice Raw cache read. A returned cert may be expired or revoked.
     function loadVerified(bytes32 certHash) external view returns (VerifiedCert memory);
 
     function isRevoked(bytes32 certHash) external view returns (bool);
