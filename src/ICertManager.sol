@@ -12,6 +12,12 @@ interface ICertManager {
 
     // --- Active (hinted) entrypoints ---
 
+    function owner() external view returns (address);
+
+    function revoker() external view returns (address);
+
+    function revoked(bytes32 certHash) external view returns (bool);
+
     function verifyCACertWithHints(bytes memory cert, bytes32 parentCertHash, bytes memory signatureHints)
         external
         returns (bytes32);
@@ -20,7 +26,20 @@ interface ICertManager {
         external
         returns (VerifiedCert memory);
 
+    /// @notice Raw cache read. A returned cert may be expired or revoked.
     function loadVerified(bytes32 certHash) external view returns (VerifiedCert memory);
+
+    function isRevoked(bytes32 certHash) external view returns (bool);
+
+    function transferOwnership(address newOwner) external;
+
+    function setRevoker(address newRevoker) external;
+
+    function revokeCert(bytes32 certHash) external;
+
+    function revokeCerts(bytes32[] calldata certHashes) external;
+
+    function unrevokeCert(bytes32 certHash) external;
 
     // --- DEPRECATED: these always revert; use the *WithHints variants above. ---
 

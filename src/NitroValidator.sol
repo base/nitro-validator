@@ -91,8 +91,8 @@ contract NitroValidator {
     ///      well-formed, but deliberately does NOT enforce:
     ///      - Freshness / anti-replay: `ptrs.timestamp` is only checked to be non-zero and `nonce`
     ///        is only length-bounded. A valid attestation can be replayed until its leaf cert
-    ///        expires. Callers that need freshness must compare `ptrs.timestamp / 1000` to
-    ///        `block.timestamp` and/or match `ptrs.nonce` against a challenge they issued.
+    ///        expires or is revoked. Callers that need freshness must compare `ptrs.timestamp / 1000`
+    ///        to `block.timestamp` and/or match `ptrs.nonce` against a challenge they issued.
     ///      - Signature non-malleability: low-S is not enforced (see {ECDSA384Curve.CURVE_LOW_S_MAX}),
     ///        so do not use `signature` (or its hash) as a uniqueness key — dedupe on attestation
     ///        fields instead.

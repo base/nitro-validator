@@ -4,6 +4,21 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project aims to follow
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- Operational certificate revocation in `CertManager`: an owner-managed `revoker` can mark one or
+  many certificate hashes revoked, and the owner can rotate the revoker or undo accidental
+  revocations.
+
+### Changed
+- Certificate verification and cached reuse now reject revoked certificates and revoked cached
+  parent-chain ancestors independently of `notAfter`.
+- Root certificate revocation is owner-only, while non-root revocation remains delegated to the
+  revoker role.
+- Cold certificate verification rejects submitted cert bytes with trailing data or fields after the
+  signature, keeping revocation keys aligned with the parsed certificate bytes.
+
 ## [2.0.0-rc.1] - 2026-06-09
 
 First release candidate of the **hinted P-384** rework. This is a major, breaking change motivated
@@ -44,4 +59,5 @@ yet a general-availability release.
   in NatSpec, the README, and the design doc.
 - Moved the demo `CertManagerDemo` out of `src/` into `test/helpers/`.
 
+[Unreleased]: https://github.com/base/nitro-validator/compare/v2.0.0-rc.1...HEAD
 [2.0.0-rc.1]: https://github.com/base/nitro-validator/releases/tag/v2.0.0-rc.1
