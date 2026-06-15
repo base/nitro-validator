@@ -188,6 +188,13 @@ contract NitroValidator {
         LibBytes.memcpy(dest + 13 + rawProtectedLength, payloadSrc, rawPayloadLength);
     }
 
+    /// @dev Parses the COSE payload into field pointers using a strict shape: any unrecognised
+    ///      CBOR key reverts ("invalid attestation key"), and nested indefinite-length
+    ///      `pcrs`/`cabundle` are not supported (outer-map indefinite-length IS). These are
+    ///      liveness-only constraints — they can only cause a revert, never a false accept — but
+    ///      they make verification forward-INCOMPATIBLE with attestation-format changes: a new AWS
+    ///      field would require a contract upgrade. Tolerating unknown keys would be safe (every
+    ///      field is under AWS's COSE signature). See docs §10 "Forward-compatibility".
     function _parseAttestation(bytes memory attestationTbs) internal pure returns (Ptrs memory) {
         require(attestationTbs.keccak(0, 18) == ATTESTATION_TBS_PREFIX, "invalid attestation prefix");
 

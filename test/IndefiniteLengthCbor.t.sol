@@ -614,4 +614,57 @@ contract NitroValidatorIndefiniteLengthTest is Test {
         vm.expectRevert("unexpected type");
         validator.parseAttestation(_buildTbs(abi.encodePacked(CBOR_MAP_INDEFINITE, entries, CBOR_BREAK)));
     }
+
+    // ══════════════════════════════════════════════════════════
+    //  FORWARD-COMPATIBILITY — known latent liveness risks (SKIPPED)
+    //
+    //  The two reverts above are deliberate parser behaviour, but the project does not
+    //  document the forward-compatibility consequence as an accepted trade-off. They are
+    //  liveness-only (a wrong/unknown shape can only revert, never false-accept), yet a
+    //  future change to the AWS attestation format would brick verification until the
+    //  contract is upgraded. The tests below encode the DESIRED forward-compatible
+    //  behaviour and are skipped until the parser supports it (see docs §10
+    //  "Forward-compatibility").
+    // ══════════════════════════════════════════════════════════
+
+    /// @dev SKIPPED. Today an unknown attestation key reverts (pinned by
+    ///      test_neg_unknownKeyDefinite_reverts). Tolerating it would be SAFE — every field is
+    ///      under AWS's COSE signature, so ignoring an unrecognised key cannot forge anything;
+    ///      the parser simply lacks a generic CBOR skip. If AWS adds any new field, every such
+    ///      attestation becomes unverifiable until a contract upgrade.
+    function test_unknownKey_forwardCompat_tolerated() public {
+        vm.skip(true, "latent liveness risk: unknown attestation key reverts; needs a generic CBOR skip to tolerate new AWS fields");
+
+        // Desired: a known field still parses and the unknown key is ignored.
+        bytes memory entries = abi.encodePacked(
+            hex"696d6f64756c655f6964", // key "module_id"
+            hex"6474657374", //           val "test"
+            hex"63626164", //             key "bad" (unknown)
+            hex"6474657374" //            val "test"
+        );
+        NitroValidator.Ptrs memory p = validator.parseAttestation(_buildTbs(abi.encodePacked(hex"a2", entries)));
+        assertEq(p.moduleID.length(), SYNTH_MODULE_ID_LEN, "known field parsed; unknown key ignored");
+    }
+
+    /// @dev SKIPPED. Outer-map indefinite-length is supported, but a NESTED indefinite-length
+    ///      pcrs map is not (pinned by test_edge_innerIndefinitePcrsEmpty_outerBreakTriggered and
+    ///      test_neg_nestedIndefiniteNonEmptyArray_reverts). If AWS emitted nested
+    ///      indefinite-length containers, verification would brick. This encodes the desired parse.
+    function test_nestedIndefinitePcrs_forwardCompat_parsed() public {
+        vm.skip(true, "latent liveness risk: nested indefinite-length pcrs/cabundle unsupported; would brick on an AWS encoding change");
+
+        // Desired: a nested indefinite-length pcrs map {0: bytes(48)} parses to one PCR.
+        bytes memory entries = abi.encodePacked(
+            hex"696d6f64756c655f6964", // key "module_id"
+            hex"6474657374", //           val "test"
+            hex"6470637273", //           key "pcrs"
+            CBOR_MAP_INDEFINITE, //       nested indefinite-length map
+            hex"00", //                   key 0
+            hex"5830", //                 val bytes(48) header
+            new bytes(48), //             48 zero bytes
+            CBOR_BREAK //                 inner break
+        );
+        NitroValidator.Ptrs memory p = validator.parseAttestation(_buildTbs(abi.encodePacked(hex"a2", entries)));
+        assertEq(p.pcrs.length, 1, "nested indefinite-length pcrs should yield 1 PCR");
+    }
 }

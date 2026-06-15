@@ -80,6 +80,21 @@ contract CertManagerTest is Test {
         return cm.verifyCACertWithHints(cert, parentHash, hints);
     }
 
+    // Cache-griefing liveness edge: `verifiedParent[certHash]` is written once on the cold
+    // path (gated on cert.pubKey.length == 0) and never updated. If AWS renews an intermediate
+    // CA with the SAME signing key but a new validity window, the renewed cert has different
+    // DER bytes -> a different keccak256 -> a different parentCertHash in the chain. A leaf
+    // already cached under the old parent then permanently reverts "parent cert mismatch"
+    // against the renewed parent, with no admin override. (The wrong-parent revert mechanism
+    // itself is covered by HintedNitroAttestationTest.test_Hinted*RejectsCachedParentMismatch.)
+    //
+    // SKIPPED: realising this needs a genuine same-key *renewed* CA cert, which requires an
+    // AWS signing operation and is unavailable as a static fixture. Documented as a known
+    // liveness edge; see security review redteam/r3-cache-replay-malleability.md (Claim 2).
+    function test_CacheGriefingSameKeyCaRenewalBricksCachedLeaf() public {
+        vm.skip(true, "needs a same-key-renewed AWS CA fixture (off-chain signing); documents verifiedParent first-writer-wins");
+    }
+
     function testFuzz_uint384At_LeadingZeros(uint8 numZeros, uint128 hiSeed, uint256 loSeed) public view {
         numZeros = uint8(bound(numZeros, 0, 16));
 

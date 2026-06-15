@@ -143,6 +143,11 @@ integrator (see [docs](docs/hinted-p384-nitro-attestation.md#integrator-responsi
   responsibility.
 - **Revocation** — not supported (consistent with AWS's documented validation process, linked
   above).
+- **Forward-compatibility** — the attestation parser uses a fixed key whitelist (unknown keys
+  revert) and does not support nested indefinite-length `pcrs`/`cabundle`. A future change to the
+  AWS attestation format would make verification revert (never a false accept) until the contract
+  is upgraded. AWS emits the known, definite-length format today. See
+  [docs §10](docs/hinted-p384-nitro-attestation.md#forward-compatibility-attestation-format-changes).
 
 ## Build
 

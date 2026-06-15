@@ -503,6 +503,30 @@ can never silently diverge.
   must stay in sync with the verifier's execution order. Its DER/CBOR parsing should
   be reviewed for robustness.
 
+### Forward-compatibility (attestation format changes)
+
+The attestation parser accepts a strict, fixed shape: a known whitelist of CBOR keys, and
+definite-length or outer-indefinite-length maps. The two consequences below are deliberate
+parser behaviour and are **liveness-only** — a wrong or unrecognised shape can only cause a
+revert (a genuine attestation failing to verify), never a false accept. They are recorded here
+because the project does not otherwise document them as an accepted trade-off: each would brick
+verification after a future AWS attestation-format change, and resolving it needs a contract
+upgrade.
+
+- **Unknown attestation key → revert (`"invalid attestation key"`).** If AWS adds a new field to
+  the attestation document, every attestation carrying it becomes unverifiable. Tolerating unknown
+  keys would be safe — all fields sit under AWS's COSE signature, so ignoring an unrecognised one
+  cannot forge anything — but the parser has no generic CBOR skip routine. Current behaviour is
+  pinned by `test_neg_unknownKey{Definite,Indefinite}_reverts`; the desired forward-compatible
+  behaviour is captured (skipped) in `test_unknownKey_forwardCompat_tolerated`.
+- **Nested indefinite-length `pcrs` / `cabundle` → revert / empty parse.** Outer-map
+  indefinite-length encoding is supported (via the `0xFF` break marker); nested indefinite-length
+  containers are not. Pinned by `test_edge_innerIndefinitePcrsEmpty_outerBreakTriggered` and
+  `test_neg_nestedIndefiniteNonEmptyArray_reverts`; desired behaviour (skipped) in
+  `test_nestedIndefinitePcrs_forwardCompat_parsed`.
+
+AWS currently emits definite-length CBOR with the known field set, so neither is triggered today.
+
 ### Integrator responsibilities (what the contract does NOT enforce)
 
 Verification proves an attestation is genuine and well-formed. The following are
