@@ -386,16 +386,23 @@ revocation hook on-chain:
 - the `CertManager` deployer starts as both `owner` and `revoker`;
 - the owner can transfer ownership, rotate the revoker, undo accidental revocations
   with `unrevokeCert`, and revoke `ROOT_CA_CERT_HASH` as an emergency global halt;
-- the revoker can call `revokeCert` / `revokeCerts` for non-root AWS certificate hashes
-  after checking AWS CRLs off-chain.
+- the revoker can call `revokeCert` / `revokeCerts` for non-root AWS certificate
+  identity keys after checking AWS CRLs off-chain.
 
-Revocation keys are byte-identity hashes: `keccak256(certBytes)`, where `certBytes`
-are the exact X.509 DER bytes submitted to `verifyCACertWithHints` /
-`verifyClientCertWithHints`. AWS CRLs identify certificates by issuer and serial, so
-operators must resolve CRL entries to the exact submitted certificate bytes off-chain
-before submitting revocation transactions. Cold verification rejects certificate byte
-strings whose outer ASN.1 certificate object does not consume all submitted bytes, or
-whose certificate sequence contains fields after the signature.
+Revocation keys are **(issuer, serial) identities**: `keccak256(issuerHash, serialHash)`,
+the same pair AWS CRLs use to list revoked certificates. `CertManager.computeCertId(certDER)`
+returns this key (operators can also replicate it off-chain directly from a CRL entry). The
+key is deliberately **not** `keccak256(certBytes)`: raw cert bytes are not a stable identity,
+because ECDSA signatures are malleable (for a valid `(r, s)` the twin `(r, n-s)` also verifies)
+and DER can be re-encoded — so a byte-keyed revocation could be bypassed by submitting a
+re-encoded twin of the revoked certificate, which hashes differently but still verifies. The
+(issuer, serial) pair lives inside the CA-signed TBS, so it is fixed for every byte-encoding of
+a given certificate, and the identity recorded when a cert is first verified matches the key an
+operator computes from the CRL. The root is the one exception: it is never parsed on-chain (it
+is pinned by `ROOT_CA_CERT_HASH`), so its emergency-halt key is that pinned hash. Cold
+verification additionally rejects certificate byte strings whose outer ASN.1 certificate object
+does not consume all submitted bytes, or whose certificate sequence contains fields after the
+signature.
 
 Revoked certs are rejected during cold verification, cached reuse, and warm attestation
 bundle re-walks. Parent-chain revocation is also enforced for cached intermediates, so a
@@ -470,7 +477,7 @@ Runtime sizes (`forge build --sizes`); EIP-170 limit is 24,576 bytes:
 | contract | runtime size | margin |
 |----------|-------------:|-------:|
 | `P384Verifier` | 7,805 | 16,771 |
-| `CertManager` | 21,849 | 2,727 |
+| `CertManager` | 22,297 | 2,279 |
 | `NitroValidator` | 14,062 | 10,514 |
 
 (Test-only helper contracts are not part of the deployable contract set.)
@@ -559,10 +566,12 @@ deliberately left to the caller and must be handled in the consuming contract:
   attestation fields (e.g. `moduleID + timestamp + nonce`).
 - **Enclave-image / PCR policy.** The contract returns the parsed `pcrs` and
   `moduleID`; deciding which enclave images you trust is application policy.
-- **CRL monitoring.** `CertManager` enforces certificate hashes that have been marked
-  revoked on-chain, but it does not fetch or parse AWS CRLs. A trusted off-chain
-  operator must monitor AWS CRLs, map issuer/serial entries to exact submitted
-  certificate-byte hashes, and submit `revokeCert` / `revokeCerts` transactions promptly.
+- **CRL monitoring.** `CertManager` enforces the certificate identity keys that have been
+  marked revoked on-chain, but it does not fetch or parse AWS CRLs. A trusted off-chain
+  operator must monitor AWS CRLs and submit `revokeCert` / `revokeCerts` transactions
+  promptly, passing each affected cert's `(issuer, serial)` identity key
+  (`keccak256(issuerHash, serialHash)`, via `computeCertId` or computed directly from the
+  CRL entry).
 
 ## 11. On-chain demo
 

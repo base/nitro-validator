@@ -256,7 +256,7 @@ contract HintedNitroAttestationTest is Test {
         (bytes memory caCert, bytes32 parentHash, bytes memory parentPubKey) = _firstNonRootCA(attestationTbs, ptrs);
         bytes memory hints = hintCollector.collectCertSignatureHints(caCert, parentPubKey);
 
-        certManager.revokeCert(keccak256(caCert));
+        certManager.revokeCert(certManager.computeCertId(caCert));
 
         vm.expectRevert("cert revoked");
         certManager.verifyCACertWithHints(caCert, parentHash, hints);
@@ -268,9 +268,9 @@ contract HintedNitroAttestationTest is Test {
         NitroValidator.Ptrs memory ptrs = parser.parseAttestation(attestationTbs);
         (bytes memory caCert, bytes32 parentHash, bytes memory parentPubKey) = _firstNonRootCA(attestationTbs, ptrs);
         bytes memory hints = hintCollector.collectCertSignatureHints(caCert, parentPubKey);
-        bytes32 caHash = certManager.verifyCACertWithHints(caCert, parentHash, hints);
+        certManager.verifyCACertWithHints(caCert, parentHash, hints);
 
-        certManager.revokeCert(caHash);
+        certManager.revokeCert(certManager.computeCertId(caCert));
 
         vm.expectRevert("cert revoked");
         certManager.verifyCACertWithHints(caCert, parentHash, "");
@@ -288,7 +288,7 @@ contract HintedNitroAttestationTest is Test {
         bytes32 ca1Hash = certManager.verifyCACertWithHints(ca1, rootHash, ca1Hints);
 
         bytes memory ca2 = attestationTbs.slice(ptrs.cabundle[2]);
-        certManager.revokeCert(ca1Hash);
+        certManager.revokeCert(certManager.computeCertId(ca1));
 
         vm.expectRevert("cert revoked");
         certManager.verifyCACertWithHints(ca2, ca1Hash, "");
@@ -341,7 +341,7 @@ contract HintedNitroAttestationTest is Test {
         bytes memory hash = Sha2Ext.sha384(attestationTbs, 0, attestationTbs.length);
         bytes memory attestationHints = hintCollector.collectVerifyHints(hash, signature, leaf.pubKey);
 
-        certManager.revokeCert(keccak256(attestationTbs.slice(ptrs.cert)));
+        certManager.revokeCert(certManager.computeCertId(attestationTbs.slice(ptrs.cert)));
 
         vm.expectRevert("cert revoked");
         validator.validateAttestationWithHints(attestationTbs, signature, attestationHints);
@@ -367,13 +367,36 @@ contract HintedNitroAttestationTest is Test {
         (bytes memory caCert, bytes32 parentHash, bytes memory parentPubKey) = _firstNonRootCA(attestationTbs, ptrs);
         bytes memory hints = hintCollector.collectCertSignatureHints(caCert, parentPubKey);
         bytes32 caHash = certManager.verifyCACertWithHints(caCert, parentHash, hints);
+        bytes32 caId = certManager.computeCertId(caCert);
 
-        certManager.revokeCert(caHash);
+        certManager.revokeCert(caId);
         vm.expectRevert("cert revoked");
         certManager.verifyCACertWithHints(caCert, parentHash, "");
 
-        certManager.unrevokeCert(caHash);
+        certManager.unrevokeCert(caId);
         assertEq(certManager.verifyCACertWithHints(caCert, parentHash, ""), caHash);
+    }
+
+    /// @dev Revocation is keyed by the (issuer, serial) identity, not by keccak256(cert), so a cert
+    ///      whose bytes differ only outside the CA-signed TBS — e.g. an ECDSA-malleable `(r, n-s)`
+    ///      signature twin or a DER re-encoding of the signature — maps to the SAME revocation key
+    ///      and cannot slip past a revocation. Here we mutate a signature byte to model that variant.
+    function test_RevocationIdentityIsInvariantToSignatureBytes() public view {
+        bytes memory attestation = _repairMissingPublicKeyBytes(_decodeBase64(_realAttestationB64()));
+        (bytes memory attestationTbs,) = validator.decodeAttestationTbs(attestation);
+        NitroValidator.Ptrs memory ptrs = parser.parseAttestation(attestationTbs);
+        (bytes memory caCert,,) = _firstNonRootCA(attestationTbs, ptrs);
+
+        bytes memory variant = bytes.concat(caCert);
+        // Flip the last signature byte (inside the trailing s INTEGER, outside the TBS).
+        variant[variant.length - 1] = bytes1(uint8(variant[variant.length - 1]) ^ 0x01);
+
+        assertTrue(keccak256(caCert) != keccak256(variant), "byte hashes differ");
+        assertEq(
+            certManager.computeCertId(caCert),
+            certManager.computeCertId(variant),
+            "identity invariant to signature bytes"
+        );
     }
 
     function test_HintedCACertRejectsExpiredCachedCert() public {

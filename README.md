@@ -6,7 +6,7 @@ This repo provides solidity contracts for the verification of attestations gener
 AWS's attestation verification documentation disables CRL checks in its sample flow
 [here](https://github.com/aws/aws-nitro-enclaves-nsm-api/blob/4b851f3006c6fa98f23dcffb2cba03b39de9b8af/docs/attestation_process.md#32-syntactical-validation).
 This library supports operational revocation with an authorized revoker: operators monitor AWS CRLs
-off-chain and call `CertManager.revokeCert` / `revokeCerts` for affected certificate hashes.
+off-chain and call `CertManager.revokeCert` / `revokeCerts` for affected certificate identity keys.
 
 ## Hinted P-384 verification
 
@@ -77,18 +77,22 @@ hint, so the generator is trusted only for liveness, never for correctness.
 ### Revocation operations
 
 `CertManager` does not fetch or parse AWS CRLs on-chain. Instead, an authorized `revoker` address
-marks certificate hashes revoked after checking AWS CRLs off-chain. A certificate hash is
-`keccak256(certBytes)`, where `certBytes` are the exact X.509 DER bytes submitted to
-`verifyCACertWithHints` / `verifyClientCertWithHints`; AWS CRLs identify certificates by
-issuer/serial, so the operator must resolve CRL entries to these submitted certificate bytes
-off-chain. Revoked certificates are rejected on both cold verification and cached reuse,
+marks certificates revoked after checking AWS CRLs off-chain. Revocation is keyed by the
+certificate's **(issuer, serial) identity** — `keccak256(issuerHash, serialHash)`, the same identity
+AWS CRLs use to list revoked certs — not by `keccak256(certBytes)`. Raw cert bytes are **not** a
+stable identity: ECDSA signatures are malleable (the `(r, n-s)` twin also verifies) and DER is
+re-encodable, so a byte-keyed revocation could be bypassed by a re-encoded twin of the revoked cert.
+Keying on the signature-protected (issuer, serial) pair closes that gap and lets operators revoke
+straight from CRL data. Compute the key with `CertManager.computeCertId(certDER)` (or replicate it
+off-chain). Revoked certificates are rejected on both cold verification and cached reuse,
 independently of `notAfter`. Cached descendants are also rejected when their cached parent chain
 contains a revoked certificate.
 
 - The deployer starts as both `owner` and `revoker`.
 - The owner can call `transferOwnership`, `setRevoker`, `unrevokeCert`, and revoke
-  `ROOT_CA_CERT_HASH` as an emergency global halt.
-- The revoker can call `revokeCert` or `revokeCerts` for non-root certificate hashes.
+  `ROOT_CA_CERT_HASH` as an emergency global halt (the root is identified by its pinned hash, since
+  it is never parsed on-chain).
+- The revoker can call `revokeCert` or `revokeCerts` for non-root certificate identity keys.
 - `loadVerified` is a raw cache read; returned metadata does not imply the certificate is
   currently trusted.
 
@@ -165,8 +169,9 @@ integrator (see [docs](docs/hinted-p384-nitro-attestation.md#integrator-responsi
 - **Enclave policy** — checking `pcrs` / `moduleID` against the enclave image(s) you trust is your
   responsibility.
 - **Revocation operations** — the contract enforces the on-chain revoked set, but an off-chain
-  operator must monitor AWS CRLs, map issuer/serial entries to exact certificate-byte hashes, and
-  submit revoked certificate hashes.
+  operator must monitor AWS CRLs and submit the affected certificate identity keys
+  (`keccak256(issuerHash, serialHash)`, computed via `computeCertId` or directly from the CRL's
+  issuer/serial entries).
 
 ## Build
 
