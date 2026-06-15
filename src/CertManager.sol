@@ -11,13 +11,17 @@ import {IP384Verifier} from "./IP384Verifier.sol";
 
 // Manages a mapping of verified certificates and their metadata.
 // The root of trust is the AWS Nitro root cert.
-// Certificate revocation is not currently supported.
+// Certificate revocation is applied by an authorized revoker that tracks AWS CRLs off-chain.
 contract CertManager is ICertManager {
     using Asn1Decode for bytes;
     using LibAsn1Ptr for Asn1Ptr;
     using LibBytes for bytes;
 
     event CertVerified(bytes32 indexed certHash);
+    event CertRevoked(bytes32 indexed certHash);
+    event CertUnrevoked(bytes32 indexed certHash);
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+    event RevokerUpdated(address indexed previousRevoker, address indexed newRevoker);
 
     // root CA certificate constants (don't store it to reduce contract size)
     bytes32 public constant ROOT_CA_CERT_HASH = 0x311d96fcd5c5e0ccf72ef548e2ea7d4c0cd53ad7c4cc49e67471aed41d61f185;
@@ -48,12 +52,37 @@ contract CertManager is ICertManager {
     mapping(bytes32 => bytes) public verified;
     // certHash -> parent cert hash used during cold verification
     mapping(bytes32 => bytes32) internal verifiedParent;
+    // certHash -> revocation identity key (keccak256(issuerHash, serialHash)), recorded at cold
+    // verification so the warm path and parent-chain walk can check revocation without re-parsing.
+    mapping(bytes32 => bytes32) internal certIdentity;
+    // revocation set, keyed by the (issuer, serial) identity for non-root certs (see {computeCertId})
+    // and by the pinned ROOT_CA_CERT_HASH for the root emergency halt. NOT keyed by keccak256(cert):
+    // raw cert bytes are not a stable identity (ECDSA signatures are malleable and DER is re-encodable),
+    // so byte-keying would let a re-encoded twin of a revoked cert slip through.
+    mapping(bytes32 => bool) public revoked;
 
     IP384Verifier public immutable p384Verifier;
+    address public owner;
+    address public revoker;
+
+    modifier onlyOwner() {
+        _onlyOwner();
+        _;
+    }
+
+    function _onlyOwner() internal view {
+        require(msg.sender == owner, "not owner");
+    }
+
+    function _onlyRevoker() internal view {
+        require(msg.sender == revoker, "not revoker");
+    }
 
     constructor(IP384Verifier p384Verifier_) {
         require(address(p384Verifier_) != address(0), "missing P384 verifier");
         p384Verifier = p384Verifier_;
+        owner = msg.sender;
+        revoker = msg.sender;
         _saveVerified(
             ROOT_CA_CERT_HASH,
             VerifiedCert({
@@ -64,6 +93,8 @@ contract CertManager is ICertManager {
                 pubKey: ROOT_CA_CERT_PUB_KEY
             })
         );
+        emit OwnershipTransferred(address(0), msg.sender);
+        emit RevokerUpdated(address(0), msg.sender);
     }
 
     /// @notice DEPRECATED — always reverts. The fully on-chain (non-hinted) path is too expensive
@@ -104,8 +135,94 @@ contract CertManager is ICertManager {
         return _verifyCert(cert, keccak256(cert), false, parentCertHash, signatureHints);
     }
 
+    /// @notice Return raw cached certificate metadata without current trust checks.
+    /// @dev A non-empty return value only means the cert was cached previously. It may now be
+    ///      expired or revoked; use the verification entrypoints for trust-aware reuse.
     function loadVerified(bytes32 certHash) external view returns (VerifiedCert memory) {
         return _loadVerified(certHash);
+    }
+
+    function isRevoked(bytes32 certId) external view returns (bool) {
+        return revoked[certId];
+    }
+
+    /// @notice Compute the revocation identity key for a certificate.
+    /// @dev Returns `keccak256(issuerHash, serialHash)` — the (issuer DN, serial number) pair that
+    ///      uniquely identifies an X.509 certificate and that AWS CRLs use to list revoked certs.
+    ///      This key is invariant to ECDSA signature malleability (the `(r, n-s)` twin) and to DER
+    ///      re-encoding, unlike `keccak256(cert)`. Operators pass the result to {revokeCert} /
+    ///      {revokeCerts}; the same value is recorded on-chain when the cert is first verified, so a
+    ///      revocation applies to every byte-encoding of that certificate. Reverts on malformed DER.
+    function computeCertId(bytes memory cert) external pure returns (bytes32) {
+        Asn1Ptr tbsCertPtr = cert.firstChildOf(cert.root());
+        return _certIdentity(cert, tbsCertPtr);
+    }
+
+    function transferOwnership(address newOwner) external onlyOwner {
+        require(newOwner != address(0), "invalid owner");
+        emit OwnershipTransferred(owner, newOwner);
+        owner = newOwner;
+    }
+
+    function setRevoker(address newRevoker) external onlyOwner {
+        require(newRevoker != address(0), "invalid revoker");
+        emit RevokerUpdated(revoker, newRevoker);
+        revoker = newRevoker;
+    }
+
+    /// @notice Revoke a certificate by its identity key (see {computeCertId}); use ROOT_CA_CERT_HASH
+    ///         to trigger the owner-only emergency global halt.
+    function revokeCert(bytes32 certId) external {
+        _requireCanRevoke(certId);
+        _revokeCert(certId);
+    }
+
+    function revokeCerts(bytes32[] calldata certIds) external {
+        for (uint256 i = 0; i < certIds.length; ++i) {
+            _requireCanRevoke(certIds[i]);
+            _revokeCert(certIds[i]);
+        }
+    }
+
+    function unrevokeCert(bytes32 certId) external onlyOwner {
+        revoked[certId] = false;
+        emit CertUnrevoked(certId);
+    }
+
+    function _revokeCert(bytes32 certId) internal {
+        revoked[certId] = true;
+        emit CertRevoked(certId);
+    }
+
+    function _requireCanRevoke(bytes32 certId) internal view {
+        // The root is identified by its pinned cert hash (it is never parsed on-chain); revoking it
+        // halts all validation, so it is owner-only. Non-root revocation by (issuer, serial) identity
+        // is delegated to the revoker role.
+        if (certId == ROOT_CA_CERT_HASH) {
+            _onlyOwner();
+        } else {
+            _onlyRevoker();
+        }
+    }
+
+    function _requireNotRevoked(bytes32 certId) internal view {
+        require(!revoked[certId], "cert revoked");
+    }
+
+    /// @dev The revocation key for a cached cert: the pinned hash for the root, otherwise the
+    ///      (issuer, serial) identity recorded at cold verification.
+    function _revocationKey(bytes32 certHash) internal view returns (bytes32) {
+        return certHash == ROOT_CA_CERT_HASH ? ROOT_CA_CERT_HASH : certIdentity[certHash];
+    }
+
+    function _requireCachedChainNotRevoked(bytes32 certHash) internal view {
+        while (certHash != bytes32(0)) {
+            _requireNotRevoked(_revocationKey(certHash));
+            if (certHash == ROOT_CA_CERT_HASH) {
+                return;
+            }
+            certHash = verifiedParent[certHash];
+        }
     }
 
     function _verifyCert(
@@ -115,9 +232,11 @@ contract CertManager is ICertManager {
         bytes32 parentCertHash,
         bytes memory signatureHints
     ) internal returns (VerifiedCert memory) {
-        VerifiedCert memory parent = _loadVerified(parentCertHash);
+        VerifiedCert memory parent;
         if (certHash != ROOT_CA_CERT_HASH) {
+            parent = _loadVerified(parentCertHash);
             require(parent.pubKey.length > 0, "parent cert unverified");
+            _requireCachedChainNotRevoked(parentCertHash);
             require(!_certificateExpired(parent.notAfter), "parent cert expired");
             require(parent.ca, "parent cert is not a CA");
             require(!ca || parent.maxPathLen != 0, "maxPathLen exceeded");
@@ -126,6 +245,7 @@ contract CertManager is ICertManager {
         // skip verification if already verified
         VerifiedCert memory cert = _loadVerified(certHash);
         if (cert.pubKey.length != 0) {
+            _requireNotRevoked(_revocationKey(certHash));
             require(!_certificateExpired(cert.notAfter), "cert expired");
             require(cert.ca == ca, "cert is not a CA");
             if (certHash != ROOT_CA_CERT_HASH) {
@@ -134,9 +254,13 @@ contract CertManager is ICertManager {
             return cert;
         }
 
-        cert = _verifyUncachedCert(certificate, ca, parent, signatureHints);
+        bytes32 identity;
+        (cert, identity) = _verifyUncachedCert(certificate, ca, parent, signatureHints);
+        // Reject by (issuer, serial) identity so a re-encoded twin of a revoked cert cannot pass.
+        _requireNotRevoked(identity);
         _saveVerified(certHash, cert);
         verifiedParent[certHash] = parentCertHash;
+        certIdentity[certHash] = identity;
 
         emit CertVerified(certHash);
 
@@ -148,13 +272,16 @@ contract CertManager is ICertManager {
         bool ca,
         VerifiedCert memory parent,
         bytes memory signatureHints
-    ) internal view returns (VerifiedCert memory cert) {
+    ) internal view returns (VerifiedCert memory cert, bytes32 identity) {
         Asn1Ptr root = certificate.root();
+        require(root.totalLength() == certificate.length, "invalid cert length");
         Asn1Ptr tbsCertPtr = certificate.firstChildOf(root);
         (uint64 notAfter, int64 maxPathLen, bytes32 issuerHash, bytes32 subjectHash, bytes memory pubKey) =
             _parseTbs(certificate, tbsCertPtr, ca);
 
         require(parent.subjectHash == issuerHash, "issuer / subject mismatch");
+
+        identity = _certIdentity(certificate, tbsCertPtr);
 
         // constrain maxPathLen to parent's maxPathLen-1
         if (parent.maxPathLen > 0 && (maxPathLen < 0 || maxPathLen >= parent.maxPathLen)) {
@@ -166,6 +293,21 @@ contract CertManager is ICertManager {
         cert = VerifiedCert({
             ca: ca, notAfter: notAfter, maxPathLen: maxPathLen, subjectHash: subjectHash, pubKey: pubKey
         });
+    }
+
+    /// @dev Derives the (issuer, serial) revocation identity from a parsed certificate. The serial is
+    ///      the second TBS field (after the explicit [0] version) and the issuer DN is the fourth
+    ///      (after the inner signature algorithm); both lie inside the CA-signed TBS, so the identity
+    ///      is fixed for any byte-encoding of the certificate that verifies. Mirrors the issuer-hash
+    ///      derivation in `_parseTbsInner`.
+    function _certIdentity(bytes memory certificate, Asn1Ptr tbsCertPtr) internal pure returns (bytes32) {
+        Asn1Ptr versionPtr = certificate.firstChildOf(tbsCertPtr);
+        Asn1Ptr serialPtr = certificate.nextSiblingOf(versionPtr);
+        Asn1Ptr sigAlgoPtr = certificate.nextSiblingOf(serialPtr);
+        Asn1Ptr issuerPtr = certificate.nextSiblingOf(sigAlgoPtr);
+        bytes32 serialHash = certificate.keccak(serialPtr.content(), serialPtr.length());
+        bytes32 issuerHash = certificate.keccak(issuerPtr.content(), issuerPtr.length());
+        return keccak256(abi.encodePacked(issuerHash, serialHash));
     }
 
     function _parseTbs(bytes memory certificate, Asn1Ptr ptr, bool ca)
@@ -337,19 +479,16 @@ contract CertManager is ICertManager {
     ) internal view {
         Asn1Ptr sigAlgoPtr = certificate.nextSiblingOf(ptr);
         require(certificate.keccak(sigAlgoPtr.content(), sigAlgoPtr.length()) == CERT_ALGO_OID, "invalid cert sig algo");
+        Asn1Ptr sigPtr = certificate.nextSiblingOf(sigAlgoPtr);
+        require(sigPtr.header() + sigPtr.totalLength() == certificate.length, "trailing cert fields");
 
         bytes memory hash = Sha2Ext.sha384(certificate, ptr.header(), ptr.totalLength());
-        bytes memory sigPacked = _certSignature(certificate, sigAlgoPtr);
+        bytes memory sigPacked = _certSignature(certificate, sigPtr);
 
         require(p384Verifier.verifyP384SignatureWithHints(hash, sigPacked, pubKey, signatureHints), "invalid sig");
     }
 
-    function _certSignature(bytes memory certificate, Asn1Ptr sigAlgoPtr)
-        internal
-        pure
-        returns (bytes memory sigPacked)
-    {
-        Asn1Ptr sigPtr = certificate.nextSiblingOf(sigAlgoPtr);
+    function _certSignature(bytes memory certificate, Asn1Ptr sigPtr) internal pure returns (bytes memory sigPacked) {
         Asn1Ptr sigBPtr = certificate.bitstring(sigPtr);
         Asn1Ptr sigRoot = certificate.rootOf(sigBPtr);
         Asn1Ptr sigRPtr = certificate.firstChildOf(sigRoot);

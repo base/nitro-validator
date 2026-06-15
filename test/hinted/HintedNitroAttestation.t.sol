@@ -135,6 +135,270 @@ contract HintedNitroAttestationTest is Test {
         certManager.verifyClientCertWithHints(clientCert, keccak256(rootCert), "");
     }
 
+    function test_CertManagerRevocationRoles() public {
+        assertEq(certManager.owner(), address(this));
+        assertEq(certManager.revoker(), address(this));
+
+        bytes32 certHash = keccak256("cert");
+        certManager.revokeCert(certHash);
+        assertTrue(certManager.revoked(certHash));
+        assertTrue(certManager.isRevoked(certHash));
+
+        address newRevoker = address(0xBEEF);
+        vm.prank(address(0xCAFE));
+        vm.expectRevert("not owner");
+        certManager.setRevoker(newRevoker);
+
+        vm.expectRevert("invalid revoker");
+        certManager.setRevoker(address(0));
+
+        certManager.setRevoker(newRevoker);
+        assertEq(certManager.revoker(), newRevoker);
+
+        bytes32 otherCertHash = keccak256("other cert");
+        vm.prank(address(0xCAFE));
+        vm.expectRevert("not revoker");
+        certManager.revokeCert(otherCertHash);
+
+        vm.prank(newRevoker);
+        certManager.revokeCert(otherCertHash);
+        assertTrue(certManager.revoked(otherCertHash));
+
+        vm.prank(newRevoker);
+        vm.expectRevert("not owner");
+        certManager.unrevokeCert(otherCertHash);
+
+        certManager.unrevokeCert(otherCertHash);
+        assertFalse(certManager.revoked(otherCertHash));
+
+        vm.expectRevert("invalid owner");
+        certManager.transferOwnership(address(0));
+
+        address newOwner = address(0xA11CE);
+        vm.prank(address(0xCAFE));
+        vm.expectRevert("not owner");
+        certManager.transferOwnership(newOwner);
+
+        certManager.transferOwnership(newOwner);
+        assertEq(certManager.owner(), newOwner);
+
+        vm.expectRevert("not owner");
+        certManager.setRevoker(address(0x1234));
+
+        vm.prank(newOwner);
+        certManager.setRevoker(address(0x1234));
+        assertEq(certManager.revoker(), address(0x1234));
+    }
+
+    function test_CertManagerRevokerCanBatchRevoke() public {
+        address newRevoker = address(0xBEEF);
+        certManager.setRevoker(newRevoker);
+
+        bytes32[] memory certHashes = new bytes32[](2);
+        certHashes[0] = keccak256("cert 1");
+        certHashes[1] = keccak256("cert 2");
+
+        vm.prank(newRevoker);
+        certManager.revokeCerts(certHashes);
+
+        assertTrue(certManager.revoked(certHashes[0]));
+        assertTrue(certManager.revoked(certHashes[1]));
+    }
+
+    function test_CertManagerRootRevocationRequiresOwner() public {
+        address newRevoker = address(0xBEEF);
+        certManager.setRevoker(newRevoker);
+        bytes32 rootHash = certManager.ROOT_CA_CERT_HASH();
+
+        vm.prank(newRevoker);
+        vm.expectRevert("not owner");
+        certManager.revokeCert(rootHash);
+        assertFalse(certManager.revoked(rootHash));
+
+        bytes32[] memory certHashes = new bytes32[](2);
+        certHashes[0] = keccak256("non-root cert");
+        certHashes[1] = rootHash;
+
+        vm.prank(newRevoker);
+        vm.expectRevert("not owner");
+        certManager.revokeCerts(certHashes);
+        assertFalse(certManager.revoked(certHashes[0]));
+        assertFalse(certManager.revoked(rootHash));
+
+        certManager.revokeCert(rootHash);
+        assertTrue(certManager.revoked(rootHash));
+    }
+
+    function test_HintedCACertRejectsTrailingBytes() public {
+        bytes memory attestation = _repairMissingPublicKeyBytes(_decodeBase64(_realAttestationB64()));
+        (bytes memory attestationTbs,) = validator.decodeAttestationTbs(attestation);
+        NitroValidator.Ptrs memory ptrs = parser.parseAttestation(attestationTbs);
+        (bytes memory caCert, bytes32 parentHash,) = _firstNonRootCA(attestationTbs, ptrs);
+
+        vm.expectRevert("invalid cert length");
+        certManager.verifyCACertWithHints(abi.encodePacked(caCert, bytes1(0x00)), parentHash, "");
+    }
+
+    function test_HintedCACertRejectsTrailingFieldInsideCertificateSequence() public {
+        bytes memory attestation = _repairMissingPublicKeyBytes(_decodeBase64(_realAttestationB64()));
+        (bytes memory attestationTbs,) = validator.decodeAttestationTbs(attestation);
+        NitroValidator.Ptrs memory ptrs = parser.parseAttestation(attestationTbs);
+        (bytes memory caCert, bytes32 parentHash,) = _firstNonRootCA(attestationTbs, ptrs);
+
+        vm.expectRevert("trailing cert fields");
+        certManager.verifyCACertWithHints(_appendInsideOuterSequence(caCert, bytes1(0x00)), parentHash, "");
+    }
+
+    function test_HintedCACertRejectsRevokedColdCert() public {
+        bytes memory attestation = _repairMissingPublicKeyBytes(_decodeBase64(_realAttestationB64()));
+        (bytes memory attestationTbs,) = validator.decodeAttestationTbs(attestation);
+        NitroValidator.Ptrs memory ptrs = parser.parseAttestation(attestationTbs);
+        (bytes memory caCert, bytes32 parentHash, bytes memory parentPubKey) = _firstNonRootCA(attestationTbs, ptrs);
+        bytes memory hints = hintCollector.collectCertSignatureHints(caCert, parentPubKey);
+
+        certManager.revokeCert(certManager.computeCertId(caCert));
+
+        vm.expectRevert("cert revoked");
+        certManager.verifyCACertWithHints(caCert, parentHash, hints);
+    }
+
+    function test_HintedCACertRejectsRevokedCachedCert() public {
+        bytes memory attestation = _repairMissingPublicKeyBytes(_decodeBase64(_realAttestationB64()));
+        (bytes memory attestationTbs,) = validator.decodeAttestationTbs(attestation);
+        NitroValidator.Ptrs memory ptrs = parser.parseAttestation(attestationTbs);
+        (bytes memory caCert, bytes32 parentHash, bytes memory parentPubKey) = _firstNonRootCA(attestationTbs, ptrs);
+        bytes memory hints = hintCollector.collectCertSignatureHints(caCert, parentPubKey);
+        certManager.verifyCACertWithHints(caCert, parentHash, hints);
+
+        certManager.revokeCert(certManager.computeCertId(caCert));
+
+        vm.expectRevert("cert revoked");
+        certManager.verifyCACertWithHints(caCert, parentHash, "");
+    }
+
+    function test_HintedCAChildRejectsRevokedParent() public {
+        bytes memory attestation = _repairMissingPublicKeyBytes(_decodeBase64(_realAttestationB64()));
+        (bytes memory attestationTbs,) = validator.decodeAttestationTbs(attestation);
+        NitroValidator.Ptrs memory ptrs = parser.parseAttestation(attestationTbs);
+
+        bytes memory rootCert = attestationTbs.slice(ptrs.cabundle[0]);
+        bytes32 rootHash = keccak256(rootCert);
+        bytes memory ca1 = attestationTbs.slice(ptrs.cabundle[1]);
+        bytes memory ca1Hints = hintCollector.collectCertSignatureHints(ca1, certManager.loadVerified(rootHash).pubKey);
+        bytes32 ca1Hash = certManager.verifyCACertWithHints(ca1, rootHash, ca1Hints);
+
+        bytes memory ca2 = attestationTbs.slice(ptrs.cabundle[2]);
+        certManager.revokeCert(certManager.computeCertId(ca1));
+
+        vm.expectRevert("cert revoked");
+        certManager.verifyCACertWithHints(ca2, ca1Hash, "");
+    }
+
+    function test_HintedCAChildRejectsRevokedAncestor() public {
+        bytes memory attestation = _repairMissingPublicKeyBytes(_decodeBase64(_realAttestationB64()));
+        (bytes memory attestationTbs,) = validator.decodeAttestationTbs(attestation);
+        NitroValidator.Ptrs memory ptrs = parser.parseAttestation(attestationTbs);
+
+        bytes memory rootCert = attestationTbs.slice(ptrs.cabundle[0]);
+        bytes32 rootHash = keccak256(rootCert);
+        bytes memory ca1 = attestationTbs.slice(ptrs.cabundle[1]);
+        bytes memory ca1Hints = hintCollector.collectCertSignatureHints(ca1, certManager.loadVerified(rootHash).pubKey);
+        bytes32 ca1Hash = certManager.verifyCACertWithHints(ca1, rootHash, ca1Hints);
+        bytes memory ca2 = attestationTbs.slice(ptrs.cabundle[2]);
+        bytes memory ca2Hints = hintCollector.collectCertSignatureHints(ca2, certManager.loadVerified(ca1Hash).pubKey);
+
+        certManager.revokeCert(rootHash);
+
+        vm.expectRevert("cert revoked");
+        certManager.verifyCACertWithHints(ca2, ca1Hash, ca2Hints);
+    }
+
+    function test_HintedCachedCertRejectsRevokedAncestor() public {
+        bytes memory attestation = _repairMissingPublicKeyBytes(_decodeBase64(_realAttestationB64()));
+        (bytes memory attestationTbs,) = validator.decodeAttestationTbs(attestation);
+        NitroValidator.Ptrs memory ptrs = parser.parseAttestation(attestationTbs);
+
+        bytes memory rootCert = attestationTbs.slice(ptrs.cabundle[0]);
+        bytes32 rootHash = keccak256(rootCert);
+        bytes memory ca1 = attestationTbs.slice(ptrs.cabundle[1]);
+        bytes memory ca1Hints = hintCollector.collectCertSignatureHints(ca1, certManager.loadVerified(rootHash).pubKey);
+        bytes32 ca1Hash = certManager.verifyCACertWithHints(ca1, rootHash, ca1Hints);
+        bytes memory ca2 = attestationTbs.slice(ptrs.cabundle[2]);
+        bytes memory ca2Hints = hintCollector.collectCertSignatureHints(ca2, certManager.loadVerified(ca1Hash).pubKey);
+        certManager.verifyCACertWithHints(ca2, ca1Hash, ca2Hints);
+
+        certManager.revokeCert(rootHash);
+
+        vm.expectRevert("cert revoked");
+        certManager.verifyCACertWithHints(ca2, ca1Hash, "");
+    }
+
+    function test_HintedValidationRejectsRevokedLeaf() public {
+        bytes memory attestation = _repairMissingPublicKeyBytes(_decodeBase64(_realAttestationB64()));
+        (bytes memory attestationTbs, bytes memory signature) = validator.decodeAttestationTbs(attestation);
+        NitroValidator.Ptrs memory ptrs = parser.parseAttestation(attestationTbs);
+        ICertManager.VerifiedCert memory leaf = _cacheCertBundleWithHints(attestationTbs);
+        bytes memory hash = Sha2Ext.sha384(attestationTbs, 0, attestationTbs.length);
+        bytes memory attestationHints = hintCollector.collectVerifyHints(hash, signature, leaf.pubKey);
+
+        certManager.revokeCert(certManager.computeCertId(attestationTbs.slice(ptrs.cert)));
+
+        vm.expectRevert("cert revoked");
+        validator.validateAttestationWithHints(attestationTbs, signature, attestationHints);
+    }
+
+    function test_HintedValidationRejectsRevokedRoot() public {
+        bytes memory attestation = _repairMissingPublicKeyBytes(_decodeBase64(_realAttestationB64()));
+        (bytes memory attestationTbs, bytes memory signature) = validator.decodeAttestationTbs(attestation);
+        ICertManager.VerifiedCert memory leaf = _cacheCertBundleWithHints(attestationTbs);
+        bytes memory hash = Sha2Ext.sha384(attestationTbs, 0, attestationTbs.length);
+        bytes memory attestationHints = hintCollector.collectVerifyHints(hash, signature, leaf.pubKey);
+
+        certManager.revokeCert(certManager.ROOT_CA_CERT_HASH());
+
+        vm.expectRevert("cert revoked");
+        validator.validateAttestationWithHints(attestationTbs, signature, attestationHints);
+    }
+
+    function test_HintedCachedCertCanVerifyAfterOwnerUnrevokes() public {
+        bytes memory attestation = _repairMissingPublicKeyBytes(_decodeBase64(_realAttestationB64()));
+        (bytes memory attestationTbs,) = validator.decodeAttestationTbs(attestation);
+        NitroValidator.Ptrs memory ptrs = parser.parseAttestation(attestationTbs);
+        (bytes memory caCert, bytes32 parentHash, bytes memory parentPubKey) = _firstNonRootCA(attestationTbs, ptrs);
+        bytes memory hints = hintCollector.collectCertSignatureHints(caCert, parentPubKey);
+        bytes32 caHash = certManager.verifyCACertWithHints(caCert, parentHash, hints);
+        bytes32 caId = certManager.computeCertId(caCert);
+
+        certManager.revokeCert(caId);
+        vm.expectRevert("cert revoked");
+        certManager.verifyCACertWithHints(caCert, parentHash, "");
+
+        certManager.unrevokeCert(caId);
+        assertEq(certManager.verifyCACertWithHints(caCert, parentHash, ""), caHash);
+    }
+
+    /// @dev Revocation is keyed by the (issuer, serial) identity, not by keccak256(cert), so a cert
+    ///      whose bytes differ only outside the CA-signed TBS — e.g. an ECDSA-malleable `(r, n-s)`
+    ///      signature twin or a DER re-encoding of the signature — maps to the SAME revocation key
+    ///      and cannot slip past a revocation. Here we mutate a signature byte to model that variant.
+    function test_RevocationIdentityIsInvariantToSignatureBytes() public view {
+        bytes memory attestation = _repairMissingPublicKeyBytes(_decodeBase64(_realAttestationB64()));
+        (bytes memory attestationTbs,) = validator.decodeAttestationTbs(attestation);
+        NitroValidator.Ptrs memory ptrs = parser.parseAttestation(attestationTbs);
+        (bytes memory caCert,,) = _firstNonRootCA(attestationTbs, ptrs);
+
+        bytes memory variant = bytes.concat(caCert);
+        // Flip the last signature byte (inside the trailing s INTEGER, outside the TBS).
+        variant[variant.length - 1] = bytes1(uint8(variant[variant.length - 1]) ^ 0x01);
+
+        assertTrue(keccak256(caCert) != keccak256(variant), "byte hashes differ");
+        assertEq(
+            certManager.computeCertId(caCert),
+            certManager.computeCertId(variant),
+            "identity invariant to signature bytes"
+        );
+    }
+
     function test_HintedCACertRejectsExpiredCachedCert() public {
         bytes memory attestation = _repairMissingPublicKeyBytes(_decodeBase64(_realAttestationB64()));
         (bytes memory attestationTbs,) = validator.decodeAttestationTbs(attestation);
@@ -716,6 +980,17 @@ contract HintedNitroAttestationTest is Test {
             output[i] = input[i];
         }
         output[index] = bytes1(uint8(output[index]) ^ 1);
+    }
+
+    function _appendInsideOuterSequence(bytes memory der, bytes1 value) internal pure returns (bytes memory output) {
+        require(der.length >= 4 && der[0] == 0x30 && der[1] == 0x82, "test: expected long sequence");
+        uint256 length = uint256(uint8(der[2])) << 8 | uint8(der[3]);
+        require(length + 4 == der.length, "test: unexpected sequence length");
+        length += 1;
+
+        output = abi.encodePacked(der, value);
+        output[2] = bytes1(uint8(length >> 8));
+        output[3] = bytes1(uint8(length));
     }
 
     function _repairMissingPublicKeyBytes(bytes memory attestation) internal pure returns (bytes memory repaired) {

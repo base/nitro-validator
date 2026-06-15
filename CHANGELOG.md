@@ -6,6 +6,25 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added
+- Operational certificate revocation in `CertManager`: an owner-managed `revoker` can mark one or
+  many certificates revoked, and the owner can rotate the revoker or undo accidental revocations.
+- `CertManager.computeCertId(certDER)`: returns a certificate's `(issuer, serial)` revocation
+  identity key.
+
+### Changed
+- Certificate verification and cached reuse now reject revoked certificates and revoked cached
+  parent-chain ancestors independently of `notAfter`.
+- Revocation is keyed by the `(issuer, serial)` identity `keccak256(issuerHash, serialHash)` (what
+  AWS CRLs use), not by `keccak256(certBytes)`. Byte-keying was bypassable, because ECDSA signature
+  malleability and DER re-encoding let a revoked certificate be re-presented with different bytes
+  that still verify; the signature-protected identity closes that gap and lets operators revoke
+  directly from CRL issuer/serial entries.
+- Root certificate revocation is owner-only (keyed by the pinned `ROOT_CA_CERT_HASH`, since the root
+  is never parsed on-chain), while non-root revocation remains delegated to the revoker role.
+- Cold certificate verification rejects submitted cert bytes with trailing data or fields after the
+  signature.
+
 ### Fixed
 - Reject non-canonical P-384 public key coordinates greater than or equal to the field prime `p`.
 
@@ -49,4 +68,5 @@ yet a general-availability release.
   in NatSpec, the README, and the design doc.
 - Moved the demo `CertManagerDemo` out of `src/` into `test/helpers/`.
 
+[Unreleased]: https://github.com/base/nitro-validator/compare/v2.0.0-rc.1...HEAD
 [2.0.0-rc.1]: https://github.com/base/nitro-validator/releases/tag/v2.0.0-rc.1

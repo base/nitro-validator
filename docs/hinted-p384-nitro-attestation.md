@@ -218,8 +218,9 @@ Three deployable contracts:
   limit. It uses the hint-aware `ECDSA384` library vendored at `src/vendor/ECDSA384.sol`
   (see `src/vendor/README.md`). `CertManager` and `NitroValidator` hold **immutable**
   references to it.
-- **`CertManager`** — parses/validates certificates, caches verified ones, and
-  pins the AWS Nitro root. Implements `ICertManager`.
+- **`CertManager`** — parses/validates certificates, caches verified ones, pins the
+  AWS Nitro root, and enforces an owner-managed revocation set. Implements
+  `ICertManager`.
 - **`NitroValidator`** — parses the CBOR/COSE attestation and drives the
   certificate chain through `CertManager`.
 
@@ -372,9 +373,46 @@ Practical reuse cases:
 
 **Cache reuse** is allowed when: the submitted DER hashes to a cached cert; the cert
 is unexpired (`notAfter ≥ block.timestamp`); the cached CA/client role matches; and
-`parentCertHash` matches the parent used during cold verification. The cache is global
-on-chain state — once any caller verifies a cert, others reuse it until expiry, but
-only under the same parent binding.
+`parentCertHash` matches the parent used during cold verification; and neither the cert
+nor its cached parent chain is revoked. The cache is global on-chain state — once any
+caller verifies a cert, others reuse it until expiry or revocation, but only under the
+same parent binding.
+
+### Revocation model
+AWS's Nitro attestation documentation disables CRL checking in its sample validation
+flow. This implementation keeps CRL parsing off-chain and exposes an operational
+revocation hook on-chain:
+
+- the `CertManager` deployer starts as both `owner` and `revoker`;
+- the owner can transfer ownership, rotate the revoker, undo accidental revocations
+  with `unrevokeCert`, and revoke `ROOT_CA_CERT_HASH` as an emergency global halt;
+- the revoker can call `revokeCert` / `revokeCerts` for non-root AWS certificate
+  identity keys after checking AWS CRLs off-chain.
+
+Revocation keys are **(issuer, serial) identities**: `keccak256(issuerHash, serialHash)`,
+the same pair AWS CRLs use to list revoked certificates. `CertManager.computeCertId(certDER)`
+returns this key (operators can also replicate it off-chain directly from a CRL entry). The
+key is deliberately **not** `keccak256(certBytes)`: raw cert bytes are not a stable identity,
+because ECDSA signatures are malleable (for a valid `(r, s)` the twin `(r, n-s)` also verifies)
+and DER can be re-encoded — so a byte-keyed revocation could be bypassed by submitting a
+re-encoded twin of the revoked certificate, which hashes differently but still verifies. The
+(issuer, serial) pair lives inside the CA-signed TBS, so it is fixed for every byte-encoding of
+a given certificate, and the identity recorded when a cert is first verified matches the key an
+operator computes from the CRL. The root is the one exception: it is never parsed on-chain (it
+is pinned by `ROOT_CA_CERT_HASH`), so its emergency-halt key is that pinned hash. Cold
+verification additionally rejects certificate byte strings whose outer ASN.1 certificate object
+does not consume all submitted bytes, or whose certificate sequence contains fields after the
+signature.
+
+Revoked certs are rejected during cold verification, cached reuse, and warm attestation
+bundle re-walks. Parent-chain revocation is also enforced for cached intermediates, so a
+cached descendant cannot keep verifying through an ancestor that was later revoked.
+Revocation is checked independently of `notAfter`, so a revoked cert is untrusted even if
+its X.509 validity period has not expired.
+
+`loadVerified` is intentionally a raw cache read. A non-empty return value means the cert
+metadata was cached previously; it does not imply the cert is currently trusted, unexpired,
+or unrevoked.
 
 **Warm-only guard.** `validateAttestationWithHints` re-runs the cabundle checks with an
 *empty* hint stream. Cached certs return before signature verification; a missing cert
@@ -439,7 +477,7 @@ Runtime sizes (`forge build --sizes`); EIP-170 limit is 24,576 bytes:
 | contract | runtime size | margin |
 |----------|-------------:|-------:|
 | `P384Verifier` | 7,805 | 16,771 |
-| `CertManager` | 19,620 | 4,956 |
+| `CertManager` | 22,297 | 2,279 |
 | `NitroValidator` | 14,062 | 10,514 |
 
 (Test-only helper contracts are not part of the deployable contract set.)
@@ -448,13 +486,13 @@ Runtime sizes (`forge build --sizes`); EIP-170 limit is 24,576 bytes:
 
 The hinted contracts are exercised against the real fixture and adversarial inputs.
 Covered failure modes: mutated hint, truncated hint, surplus hint, wrong parent hash,
-expired cached cert, expired cert on first (cold) verification, the `notAfter` validity
-boundary, CA/client role mismatch, missing warm cache, invalid final signature,
-out-of-range ECDSA scalars (`r=0`, `r≥n`, `s=0`, `s>lowSmax`), disabled unhinted
-entrypoints, EIP-170 fit, and off-chain↔on-chain hint equivalence. The DER, CBOR, and
-byte-slicing parsers additionally have direct unit and fuzz tests for malformed and
-out-of-bounds input (`test/Asn1Decode.t.sol`, `test/CborDecode.t.sol`,
-`test/LibBytes.t.sol`).
+revoked certs, revoked parents, expired cached cert, expired cert on first (cold)
+verification, the `notAfter` validity boundary, CA/client role mismatch, missing warm
+cache, invalid final signature, out-of-range ECDSA scalars (`r=0`, `r≥n`, `s=0`,
+`s>lowSmax`), disabled unhinted entrypoints, EIP-170 fit, and off-chain↔on-chain hint
+equivalence. The DER, CBOR, and byte-slicing parsers additionally have direct unit and
+fuzz tests for malformed and out-of-bounds input (`test/Asn1Decode.t.sol`,
+`test/CborDecode.t.sol`, `test/LibBytes.t.sol`).
 
 | invariant | component | how it is tested |
 |-----------|-----------|------------------|
@@ -464,6 +502,7 @@ out-of-bounds input (`test/Asn1Decode.t.sol`, `test/CborDecode.t.sol`,
 | hinted verifier matches the original accept/reject set | `P384Verifier` | accepts a valid signature; rejects mutated hash / signature / public key |
 | no unhinted fallback via hinted entrypoints | `CertManager` | the unhinted entrypoints revert |
 | warm validation requires cached certs | `NitroValidator` | empty-hint final validation reverts when a cert is uncached |
+| revoked certs are never trusted | `CertManager` | revoked cold/cached certs, revoked parents/ancestors, and revoked root/leaf warm paths revert |
 | out-of-range scalars are rejected | `P384Verifier` | `r=0` / `r≥n` / `s=0` / `s>lowSmax` signatures return false |
 | certificate validity is enforced at the boundary | `CertManager` | cold-path expiry reverts; valid at `notAfter`, expired at `notAfter+1` |
 | parsers reject malformed / out-of-bounds input | `Asn1Decode`, `CborDecode`, `LibBytes` | direct unit + fuzz tests for bad tags, lengths, types, and slices |
@@ -516,10 +555,9 @@ deliberately left to the caller and must be handled in the consuming contract:
 - **Freshness / anti-replay.** `validateAttestationWithHints` only checks that
   `timestamp` is non-zero and that `nonce` is within a size bound; it never compares
   `timestamp` (milliseconds) to `block.timestamp` (seconds) nor matches `nonce` to a
-  challenge. A valid
-  attestation can be replayed until its short-lived leaf certificate expires. If you
-  need freshness, compare `ptrs.timestamp / 1000` to `block.timestamp` and/or verify
-  `ptrs.nonce` against a value you issued.
+  challenge. A valid attestation can be replayed until its short-lived leaf certificate
+  expires or is revoked. If you need freshness, compare `ptrs.timestamp / 1000` to
+  `block.timestamp` and/or verify `ptrs.nonce` against a value you issued.
 - **Signature malleability.** Low-S is intentionally not enforced (AWS does not
   guarantee low-S; see `CURVE_LOW_S_MAX` in `ECDSA384Curve.sol`), so for a valid
   signature `(r, s)` the twin `(r, n−s)` also verifies. This cannot forge an
@@ -528,6 +566,12 @@ deliberately left to the caller and must be handled in the consuming contract:
   attestation fields (e.g. `moduleID + timestamp + nonce`).
 - **Enclave-image / PCR policy.** The contract returns the parsed `pcrs` and
   `moduleID`; deciding which enclave images you trust is application policy.
+- **CRL monitoring.** `CertManager` enforces the certificate identity keys that have been
+  marked revoked on-chain, but it does not fetch or parse AWS CRLs. A trusted off-chain
+  operator must monitor AWS CRLs and submit `revokeCert` / `revokeCerts` transactions
+  promptly, passing each affected cert's `(issuer, serial)` identity key
+  (`keccak256(issuerHash, serialHash)`, via `computeCertId` or computed directly from the
+  CRL entry).
 
 ## 11. On-chain demo
 
