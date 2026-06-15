@@ -94,6 +94,95 @@ library CborDecode {
         return elementAt(cbor, ptr.end(), 0x80, true);
     }
 
+    // Returns the index immediately after the complete CBOR data item that starts at `ix`,
+    // descending into nested arrays/maps and following indefinite-length containers to their
+    // 0xFF break marker. Unlike `elementAt`, this accepts every major type (ints, strings,
+    // arrays, maps, tags, simple/float values), so it can skip over values whose shape is not
+    // known ahead of time — e.g. the value of an unrecognised attestation key. Out-of-bounds
+    // reads (including a truncated indefinite-length container with no break marker) revert.
+    function skipValue(bytes memory cbor, uint256 ix) internal pure returns (uint256) {
+        uint8 b = uint8(cbor[ix]);
+        uint8 major = b >> 5;
+        uint8 ai = b & 0x1f;
+
+        uint256 header;
+        uint64 arg;
+        bool indefinite;
+        if (ai < 24) {
+            header = 1;
+            arg = ai;
+        } else if (ai == 24) {
+            header = 2;
+            arg = uint8(cbor[ix + 1]);
+        } else if (ai == 25) {
+            header = 3;
+            arg = cbor.readUint16(ix + 1);
+        } else if (ai == 26) {
+            header = 5;
+            arg = cbor.readUint32(ix + 1);
+        } else if (ai == 27) {
+            header = 9;
+            arg = cbor.readUint64(ix + 1);
+        } else if (ai == 31) {
+            header = 1;
+            indefinite = true;
+        } else {
+            // additional information 28..30 are reserved per RFC 8949
+            revert("invalid cbor additional info");
+        }
+
+        uint256 p = ix + header;
+
+        if (major == 0 || major == 1) {
+            // unsigned / negative integer: the value lives entirely in the header
+            require(!indefinite, "invalid integer encoding");
+            return p;
+        } else if (major == 2 || major == 3) {
+            // byte string / text string
+            if (indefinite) {
+                while (uint8(cbor[p]) != 0xff) {
+                    p = skipValue(cbor, p);
+                }
+                return p + 1;
+            }
+            require(p + arg <= cbor.length, "cbor string out of bounds");
+            return p + arg;
+        } else if (major == 4) {
+            // array
+            if (indefinite) {
+                while (uint8(cbor[p]) != 0xff) {
+                    p = skipValue(cbor, p);
+                }
+                return p + 1;
+            }
+            for (uint64 i = 0; i < arg; i++) {
+                p = skipValue(cbor, p);
+            }
+            return p;
+        } else if (major == 5) {
+            // map: each entry is a key item followed by a value item
+            if (indefinite) {
+                while (uint8(cbor[p]) != 0xff) {
+                    p = skipValue(cbor, p);
+                }
+                return p + 1;
+            }
+            for (uint64 i = 0; i < arg; i++) {
+                p = skipValue(cbor, p);
+                p = skipValue(cbor, p);
+            }
+            return p;
+        } else if (major == 6) {
+            // tag: a single tagged data item follows the header
+            require(!indefinite, "invalid tag encoding");
+            return skipValue(cbor, p);
+        } else {
+            // major == 7: simple value / float; ai==31 (break) is not a standalone value
+            require(!indefinite, "unexpected break");
+            return p;
+        }
+    }
+
     function elementAt(bytes memory cbor, uint256 ix, uint8 expectedType, bool required)
         internal
         pure

@@ -11,6 +11,7 @@ All notable changes to this project are documented here. The format is based on
   many certificates revoked, and the owner can rotate the revoker or undo accidental revocations.
 - `CertManager.computeCertId(certDER)`: returns a certificate's `(issuer, serial)` revocation
   identity key.
+- `CborDecode.skipValue`: a generic CBOR data-item skipper used to walk over values of unknown shape.
 
 ### Changed
 - Certificate verification and cached reuse now reject revoked certificates and revoked cached
@@ -24,6 +25,13 @@ All notable changes to this project are documented here. The format is based on
   is never parsed on-chain), while non-root revocation remains delegated to the revoker role.
 - Cold certificate verification rejects submitted cert bytes with trailing data or fields after the
   signature.
+- Attestation parser is now forward-compatible with AWS COSE payload format changes: unrecognised
+  map keys are skipped instead of reverting, and the payload map plus the nested `pcrs` map and
+  `cabundle` array are accepted in both definite- and indefinite-length CBOR encodings. Malformed
+  encodings still revert (reserved headers, odd-length maps, mismatched indefinite-string chunks, a
+  missing break marker). These are liveness-only changes — the whole payload is still verified
+  against AWS's COSE signature, so an ignored or re-encoded field can never change the accept
+  decision.
 
 ### Fixed
 - Reject non-canonical P-384 public key coordinates greater than or equal to the field prime `p`.

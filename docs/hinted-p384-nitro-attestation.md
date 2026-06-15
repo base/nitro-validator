@@ -414,6 +414,20 @@ its X.509 validity period has not expired.
 metadata was cached previously; it does not imply the cert is currently trusted, unexpired,
 or unrevoked.
 
+**First-verified parent pinning.** A cached cert is pinned to the parent it was first
+verified under: cold verification records `verifiedParent[certHash]` once, and every
+later warm reuse requires the caller to present that exact `parentCertHash` (a mismatch
+reverts with `parent cert mismatch`). This is a deliberate, conservative binding — warm
+reuse skips signature verification, so it must reflect the precise chain that was
+cryptographically checked, not merely *a* valid same-subject issuer. The liveness
+consequence is that if the same certificate is genuinely issued under two different CA
+objects (for example a same-key CA renewal that produces new DER bytes, hence a new
+parent hash), the cached leaf keeps verifying only through its first parent; a second
+caller chaining it through the renewed parent must wait for the cached entry to expire.
+For AWS Nitro this is effectively a non-issue because leaf certificates are short-lived
+(~3h) and expire long before their issuing CA is rotated, so the binding self-heals; it
+is documented here as a known edge rather than a fixed bug.
+
 **Warm-only guard.** `validateAttestationWithHints` re-runs the cabundle checks with an
 *empty* hint stream. Cached certs return before signature verification; a missing cert
 sends the empty stream into P384 verification and reverts with
@@ -572,6 +586,31 @@ deliberately left to the caller and must be handled in the consuming contract:
   promptly, passing each affected cert's `(issuer, serial)` identity key
   (`keccak256(issuerHash, serialHash)`, via `computeCertId` or computed directly from the
   CRL entry).
+
+### Forward compatibility (attestation format changes)
+
+`_parseAttestation` is deliberately tolerant of AWS evolving the COSE payload, so a
+benign format change cannot brick verification until a contract upgrade:
+
+- **Unknown keys are skipped, not rejected.** A map key the parser does not recognise
+  has its value skipped with a generic CBOR walk (`CborDecode.skipValue`) and parsing
+  continues. Previously an unrecognised key reverted (`"invalid attestation key"`),
+  which meant any new field AWS added would have permanently rejected every attestation.
+- **Definite and indefinite length are both accepted.** The outer payload map and the
+  nested `pcrs` map and `cabundle` array are each parsed in either definite-length form
+  or indefinite-length form (`0xBF` / `0x9F` … `0xFF`). Previously the nested containers
+  assumed a definite count, so an encoder switch to indefinite length would have
+  silently produced an empty `pcrs` / `cabundle` (and, via a leaked inner break marker,
+  truncated the rest of the map).
+
+Both behaviours are **liveness-only and cannot cause a false accept**: the entire
+to-be-signed payload is hashed and checked against AWS's COSE signature in
+`validateAttestationWithHints`. Skipped or re-encoded content is therefore signed by
+AWS, and a field the parser ignores cannot influence the accept decision — at most it
+is not surfaced to the caller. Fields the contract *does* read (`pcrs`, `cabundle`,
+`certificate`, `moduleID`, …) are parsed exactly as before. A malformed or truncated
+encoding still reverts (out-of-bounds read or unterminated indefinite container), it
+just never silently mis-parses.
 
 ## 11. On-chain demo
 
