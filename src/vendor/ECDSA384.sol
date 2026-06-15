@@ -2,9 +2,10 @@
 //
 // Vendored from Solarity solidity-lib: https://github.com/dl-solarity/solidity-lib
 //   Base (upstream, unmodified): commit b947757194de6436062c2d68118c0352be84ac4be
-//   Local modification: "Add hinted P384 inverse verification" (verifyWithHints /
-//   verifyWithHintsConsumed and the U384 hint-consumption paths). The exact upstream
-//   diff is committed alongside this file as ECDSA384.hinted.patch for review.
+//   Local modifications: "Add hinted P384 inverse verification" (verifyWithHints /
+//   verifyWithHintsConsumed and the U384 hint-consumption paths), plus strict public
+//   key coordinate bounds. The exact upstream diff is committed alongside this file
+//   as ECDSA384.hinted.patch for review.
 // Copyright (c) 2023 Solarity. Originally licensed MIT (see header above).
 pragma solidity ^0.8.4;
 
@@ -201,7 +202,9 @@ library ECDSA384 {
         uint256 y
     ) private view returns (bool) {
         unchecked {
-            if (U384.eqInteger(x, 0) || U384.eq(x, p) || U384.eqInteger(y, 0) || U384.eq(y, p)) {
+            if (
+                U384.eqInteger(x, 0) || U384.cmp(x, p) >= 0 || U384.eqInteger(y, 0) || U384.cmp(y, p) >= 0
+            ) {
                 return false;
             }
 
