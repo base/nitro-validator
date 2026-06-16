@@ -199,13 +199,25 @@ contract NitroValidator {
         require(attestationTbs.keccak(0, 18) == ATTESTATION_TBS_PREFIX, "invalid attestation prefix");
 
         CborElement payload = attestationTbs.byteStringAt(18);
-        CborElement current = attestationTbs.mapAt(payload.start());
+        uint256 mapHeaderIx = payload.start();
+        CborElement current = attestationTbs.mapAt(mapHeaderIx);
+        bool outerIndefinite = _isIndefinite(attestationTbs, mapHeaderIx);
+        uint256 entryCount = current.value(); // entry count for a definite-length map
 
         Ptrs memory ptrs;
         uint256 end = payload.end();
-        while (current.end() < end) {
-            // Break marker (0xFF) terminates indefinite-length maps
-            if (uint8(attestationTbs[current.end()]) == 0xff) break;
+        for (uint256 entry = 0;; entry++) {
+            if (outerIndefinite) {
+                // An indefinite-length map is terminated only by a 0xFF break marker. Require it to
+                // be present (do not silently stop at the payload end on a missing break), and stop
+                // exclusively on it.
+                require(current.end() < end, "missing break marker");
+                if (uint8(attestationTbs[current.end()]) == 0xff) break;
+            } else {
+                // A definite-length map ends after exactly `entryCount` entries; a stray 0xFF must
+                // not terminate it early (it would be parsed as a key and rejected as a non-string).
+                if (entry == entryCount) break;
+            }
             current = attestationTbs.nextTextString(current);
             bytes32 keyHash = attestationTbs.keccak(current);
             if (keyHash == MODULE_ID_KEY) {
@@ -230,32 +242,9 @@ contract NitroValidator {
                 current = attestationTbs.nextPositiveInt(current);
                 ptrs.timestamp = uint64(current.value());
             } else if (keyHash == CABUNDLE_KEY) {
-                uint256 headerIx = current.end();
-                current = attestationTbs.nextArray(current);
-                bool indefinite = _isIndefinite(attestationTbs, headerIx);
-                uint256 count = indefinite ? _countIndefiniteItems(attestationTbs, current.end()) : current.value();
-                ptrs.cabundle = new CborElement[](count);
-                for (uint256 i = 0; i < count; i++) {
-                    current = attestationTbs.nextByteString(current);
-                    ptrs.cabundle[i] = current;
-                }
-                if (indefinite) current = _consumeBreak(current);
+                (ptrs.cabundle, current) = _parseCabundle(attestationTbs, current);
             } else if (keyHash == PCRS_KEY) {
-                uint256 headerIx = current.end();
-                current = attestationTbs.nextMap(current);
-                bool indefinite = _isIndefinite(attestationTbs, headerIx);
-                // each map entry is a key/value pair, so an indefinite map holds 2 items per pcr
-                uint256 count = indefinite ? _countIndefiniteItems(attestationTbs, current.end()) / 2 : current.value();
-                ptrs.pcrs = new CborElement[](count);
-                for (uint256 i = 0; i < count; i++) {
-                    current = attestationTbs.nextPositiveInt(current);
-                    uint256 key = current.value();
-                    require(key < count, "invalid pcr key value");
-                    require(CborElement.unwrap(ptrs.pcrs[key]) == 0, "duplicate pcr key");
-                    current = attestationTbs.nextByteString(current);
-                    ptrs.pcrs[key] = current;
-                }
-                if (indefinite) current = _consumeBreak(current);
+                (ptrs.pcrs, current) = _parsePcrs(attestationTbs, current);
             } else {
                 // Forward-compatibility: skip (rather than reject) keys this parser does not
                 // recognise. The entire TBS is covered by AWS's COSE signature verified in
@@ -269,6 +258,60 @@ contract NitroValidator {
         }
 
         return ptrs;
+    }
+
+    /// @dev Parses the `cabundle` array (definite- or indefinite-length) starting from the key
+    ///      element `keyPtr`. Returns the parsed cert pointers and the cursor positioned after the
+    ///      array (past the break marker, for indefinite encoding).
+    function _parseCabundle(bytes memory tbs, CborElement keyPtr)
+        private
+        pure
+        returns (CborElement[] memory cabundle, CborElement current)
+    {
+        uint256 headerIx = keyPtr.end();
+        current = tbs.nextArray(keyPtr);
+        bool indefinite = _isIndefinite(tbs, headerIx);
+        uint256 count = indefinite ? _countIndefiniteItems(tbs, current.end()) : current.value();
+        cabundle = new CborElement[](count);
+        for (uint256 i = 0; i < count; i++) {
+            current = tbs.nextByteString(current);
+            cabundle[i] = current;
+        }
+        if (indefinite) current = _consumeBreak(tbs, current);
+    }
+
+    /// @dev Parses the `pcrs` map (definite- or indefinite-length) starting from the key element
+    ///      `keyPtr`. Returns the parsed pcr pointers (indexed by pcr key) and the cursor positioned
+    ///      after the map (past the break marker, for indefinite encoding).
+    function _parsePcrs(bytes memory tbs, CborElement keyPtr)
+        private
+        pure
+        returns (CborElement[] memory pcrs, CborElement current)
+    {
+        uint256 headerIx = keyPtr.end();
+        current = tbs.nextMap(keyPtr);
+        bool indefinite = _isIndefinite(tbs, headerIx);
+        uint256 count;
+        if (indefinite) {
+            // each map entry is a key/value pair, so a well-formed indefinite map holds an even
+            // number of items (2 per pcr); an odd count is malformed and must revert rather than
+            // silently drop the trailing item.
+            uint256 items = _countIndefiniteItems(tbs, current.end());
+            require(items % 2 == 0, "invalid pcrs map");
+            count = items / 2;
+        } else {
+            count = current.value();
+        }
+        pcrs = new CborElement[](count);
+        for (uint256 i = 0; i < count; i++) {
+            current = tbs.nextPositiveInt(current);
+            uint256 key = current.value();
+            require(key < count, "invalid pcr key value");
+            require(CborElement.unwrap(pcrs[key]) == 0, "duplicate pcr key");
+            current = tbs.nextByteString(current);
+            pcrs[key] = current;
+        }
+        if (indefinite) current = _consumeBreak(tbs, current);
     }
 
     /// @dev True if the CBOR container header at `headerIx` uses indefinite-length encoding (ai=31).
@@ -285,9 +328,12 @@ contract NitroValidator {
         }
     }
 
-    /// @dev Returns a zero-length element positioned just past the 0xFF break marker that follows the
-    ///      element `ptr` (i.e. at `ptr.end() + 1`), so the caller's cursor skips the consumed break.
-    function _consumeBreak(CborElement ptr) private pure returns (CborElement) {
+    /// @dev Verifies the byte immediately after `ptr` is the 0xFF break marker and returns a
+    ///      zero-length element positioned just past it, so the caller's cursor skips the consumed
+    ///      break. Reverts if the marker is absent (e.g. a nested indefinite container that did not
+    ///      close where the fill loop ended), turning a malformed encoding into a revert.
+    function _consumeBreak(bytes memory cbor, CborElement ptr) private pure returns (CborElement) {
+        require(uint8(cbor[ptr.end()]) == 0xff, "expected break marker");
         return LibCborElement.toCborElement(0x00, ptr.end() + 1, 0);
     }
 }

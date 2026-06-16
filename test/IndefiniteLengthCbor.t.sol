@@ -288,6 +288,33 @@ contract CborDecodeIndefiniteLengthTest is Test {
         vm.expectRevert();
         harness.skipValue(hex"9f0102", 0);
     }
+
+    /// @dev Indefinite text string with a valid same-type chunk ("a") is accepted.
+    function test_skipValue_indefiniteTextString() public view {
+        // 0x7F (indefinite text), 0x61 0x61 ("a"), 0xFF
+        assertEq(harness.skipValue(hex"7f6161ff", 0), 4, "indefinite text string");
+    }
+
+    /// @dev Indefinite string whose chunk is not a definite string of the same major reverts.
+    function test_skipValue_indefiniteStringNonStringChunk_reverts() public {
+        // 0x7F (indefinite text) followed by 0x01 (an integer, not a text chunk)
+        vm.expectRevert("invalid indefinite string chunk");
+        harness.skipValue(hex"7f01ff", 0);
+    }
+
+    /// @dev Indefinite byte string whose chunk is a text string (wrong major) reverts.
+    function test_skipValue_indefiniteByteStringWrongMajorChunk_reverts() public {
+        // 0x5F (indefinite bytes) followed by 0x61 0x61 (a *text* string chunk)
+        vm.expectRevert("invalid indefinite string chunk");
+        harness.skipValue(hex"5f6161ff", 0);
+    }
+
+    /// @dev Indefinite map with an odd number of items (dangling key) reverts.
+    function test_skipValue_indefiniteMapOddItems_reverts() public {
+        // 0xBF (indefinite map), key 0x01, then break — no value for the key
+        vm.expectRevert("odd cbor map item count");
+        harness.skipValue(hex"bf01ff", 0);
+    }
 }
 
 // ──────────────────────────────────────────────────────────────
@@ -782,6 +809,30 @@ contract NitroValidatorIndefiniteLengthTest is Test {
         assertEq(p.cabundle.length, 2, "two cabundle elements parsed");
         assertEq(p.cabundle[0].length(), 4, "cabundle[0] length");
         assertEq(p.cabundle[1].length(), 4, "cabundle[1] length");
+    }
+
+    /// @dev Indefinite-length inner pcrs map with an odd item count (dangling key) reverts
+    ///      instead of floor-dividing and under-parsing.
+    function test_neg_innerIndefinitePcrsOddItems_reverts() public {
+        bytes memory pcrs = abi.encodePacked(
+            hex"6470637273", // key "pcrs"
+            CBOR_MAP_INDEFINITE,
+            hex"005830",
+            new bytes(SYNTH_PCR_LEN), // 0 -> 48B
+            hex"01", //                  dangling key 1 with no value
+            CBOR_BREAK
+        );
+        bytes memory tbs = _buildTbs(abi.encodePacked(hex"a1", pcrs));
+        vm.expectRevert("invalid pcrs map");
+        validator.parseAttestation(tbs);
+    }
+
+    /// @dev Indefinite-length outer map with no trailing 0xFF break marker reverts (a missing
+    ///      break must not be silently accepted by running into the payload end).
+    function test_neg_indefiniteOuterMapMissingBreak_reverts() public {
+        bytes memory tbs = _buildTbs(abi.encodePacked(CBOR_MAP_INDEFINITE, _partialEntries()));
+        vm.expectRevert("missing break marker");
+        validator.parseAttestation(tbs);
     }
 
     /// @dev Empty indefinite-length inner cabundle array ([0x9F, 0xFF]) parses as an

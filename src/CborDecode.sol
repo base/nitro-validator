@@ -140,7 +140,11 @@ library CborDecode {
         } else if (major == 2 || major == 3) {
             // byte string / text string
             if (indefinite) {
+                // an indefinite-length string is a sequence of definite-length chunks of the SAME
+                // major type (RFC 8949 §3.2.3); reject any other chunk rather than skipping it
                 while (uint8(cbor[p]) != 0xff) {
+                    uint8 chunk = uint8(cbor[p]);
+                    require(chunk >> 5 == major && (chunk & 0x1f) != 31, "invalid indefinite string chunk");
                     p = skipValue(cbor, p);
                 }
                 return p + 1;
@@ -162,8 +166,12 @@ library CborDecode {
         } else if (major == 5) {
             // map: each entry is a key item followed by a value item
             if (indefinite) {
+                // a map must have an even number of items (key/value pairs); a dangling key before
+                // the break marker is malformed and must revert
                 while (uint8(cbor[p]) != 0xff) {
-                    p = skipValue(cbor, p);
+                    p = skipValue(cbor, p); // key
+                    require(uint8(cbor[p]) != 0xff, "odd cbor map item count");
+                    p = skipValue(cbor, p); // value
                 }
                 return p + 1;
             }
