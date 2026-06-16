@@ -74,6 +74,10 @@ contract CborDecodeHarness {
         CborElement e = cbor.nextArray(prev);
         return (e.cborType(), e.start(), e.value());
     }
+
+    function skipValue(bytes memory cbor, uint256 ix) external pure returns (uint256) {
+        return cbor.skipValue(ix);
+    }
 }
 
 /// @notice Exposes NitroValidator._parseAttestation (internal pure) for testing.
@@ -208,6 +212,108 @@ contract CborDecodeIndefiniteLengthTest is Test {
     /// @dev Reserved additional-info 30 (0xBE) still reverts.
     function test_mapAt_reservedAI30_reverts() public {
         _assertMapReservedReverts(abi.encodePacked(CBOR_MAP_AI30));
+    }
+
+    // ── skipValue: spans a complete data item of any major type ───
+
+    /// @dev Small unsigned int (ai<24) spans 1 byte.
+    function test_skipValue_tinyInt() public view {
+        assertEq(harness.skipValue(hex"0a", 0), 1, "uint 10");
+    }
+
+    /// @dev 1-byte-argument int (ai=24) spans 2 bytes.
+    function test_skipValue_int_ai24() public view {
+        assertEq(harness.skipValue(hex"1820", 0), 2, "uint 32");
+    }
+
+    /// @dev Byte string spans header + content.
+    function test_skipValue_byteString() public view {
+        assertEq(harness.skipValue(hex"43aabbcc", 0), 4, "bytes(3)");
+    }
+
+    /// @dev Text string spans header + content.
+    function test_skipValue_textString() public view {
+        assertEq(harness.skipValue(hex"6474657374", 0), 5, "\"test\"");
+    }
+
+    /// @dev Definite array recurses through all elements.
+    function test_skipValue_definiteArray() public view {
+        // [1, [2, 3], 4]
+        assertEq(harness.skipValue(hex"830182020304", 0), 6, "array(3) with nested array");
+    }
+
+    /// @dev Definite map recurses through key/value pairs.
+    function test_skipValue_definiteMap() public view {
+        // {1: 2, 3: bytes(2)}
+        assertEq(harness.skipValue(hex"a201020342aabb", 0), 7, "map(2)");
+    }
+
+    /// @dev Indefinite array stops at break and consumes it.
+    function test_skipValue_indefiniteArray() public view {
+        // [_ 1, 2 ]
+        assertEq(harness.skipValue(hex"9f0102ff", 0), 4, "indefinite array");
+    }
+
+    /// @dev Indefinite map stops at break and consumes it.
+    function test_skipValue_indefiniteMap() public view {
+        // {_ 1: 2 }
+        assertEq(harness.skipValue(hex"bf0102ff", 0), 4, "indefinite map");
+    }
+
+    /// @dev null / simple values span 1 byte.
+    function test_skipValue_null() public view {
+        assertEq(harness.skipValue(hex"f6", 0), 1, "null");
+    }
+
+    /// @dev Tag spans the tag header plus the tagged item.
+    function test_skipValue_tag() public view {
+        // tag(0) "..." — 0xC0 then a 1-byte int
+        assertEq(harness.skipValue(hex"c001", 0), 2, "tag + int");
+    }
+
+    /// @dev Reserved additional-info (28) reverts.
+    function test_skipValue_reservedAI_reverts() public {
+        vm.expectRevert("invalid cbor additional info");
+        harness.skipValue(hex"1c", 0);
+    }
+
+    /// @dev A bare break code is not a standalone value.
+    function test_skipValue_bareBreak_reverts() public {
+        vm.expectRevert("unexpected break");
+        harness.skipValue(hex"ff", 0);
+    }
+
+    /// @dev Truncated indefinite container (no break) reverts on out-of-bounds read.
+    function test_skipValue_truncatedIndefinite_reverts() public {
+        vm.expectRevert();
+        harness.skipValue(hex"9f0102", 0);
+    }
+
+    /// @dev Indefinite text string with a valid same-type chunk ("a") is accepted.
+    function test_skipValue_indefiniteTextString() public view {
+        // 0x7F (indefinite text), 0x61 0x61 ("a"), 0xFF
+        assertEq(harness.skipValue(hex"7f6161ff", 0), 4, "indefinite text string");
+    }
+
+    /// @dev Indefinite string whose chunk is not a definite string of the same major reverts.
+    function test_skipValue_indefiniteStringNonStringChunk_reverts() public {
+        // 0x7F (indefinite text) followed by 0x01 (an integer, not a text chunk)
+        vm.expectRevert("invalid indefinite string chunk");
+        harness.skipValue(hex"7f01ff", 0);
+    }
+
+    /// @dev Indefinite byte string whose chunk is a text string (wrong major) reverts.
+    function test_skipValue_indefiniteByteStringWrongMajorChunk_reverts() public {
+        // 0x5F (indefinite bytes) followed by 0x61 0x61 (a *text* string chunk)
+        vm.expectRevert("invalid indefinite string chunk");
+        harness.skipValue(hex"5f6161ff", 0);
+    }
+
+    /// @dev Indefinite map with an odd number of items (dangling key) reverts.
+    function test_skipValue_indefiniteMapOddItems_reverts() public {
+        // 0xBF (indefinite map), key 0x01, then break — no value for the key
+        vm.expectRevert("odd cbor map item count");
+        harness.skipValue(hex"bf01ff", 0);
     }
 }
 
@@ -547,10 +653,10 @@ contract NitroValidatorIndefiniteLengthTest is Test {
     // ── Inner indefinite-length structures ───────────────────
 
     /// @dev Inner PCRs map as empty indefinite-length (0xBF 0xFF) inside a
-    ///      definite-length outer map. The inner 0xFF break marker is picked up
-    ///      by the outer while-loop's break check (NitroValidator.sol:157),
-    ///      causing silent early termination. Entries after pcrs are not parsed.
-    function test_edge_innerIndefinitePcrsEmpty_outerBreakTriggered() public view {
+    ///      definite-length outer map. The inner break marker is consumed by the
+    ///      pcrs handler, so the outer loop continues and entries after pcrs are
+    ///      parsed normally (L2 forward-compatibility fix).
+    function test_edge_innerIndefinitePcrsEmpty_parsesAndContinues() public view {
         bytes memory part1 = abi.encodePacked(
             hex"696d6f64756c655f6964",
             hex"6474657374", //       module_id: "test"
@@ -583,36 +689,98 @@ contract NitroValidatorIndefiniteLengthTest is Test {
         assertEq(p.digest.length(), SYNTH_DIGEST_LEN, "digest parsed");
         assertEq(p.timestamp, SYNTH_TIMESTAMP, "timestamp parsed");
 
-        // pcrs: empty (indefinite-length map -> value=0)
+        // pcrs: empty (indefinite-length map with no entries)
         assertEq(p.pcrs.length, 0, "pcrs empty");
 
-        // Fields after pcrs: NOT parsed — inner 0xFF triggers outer break
-        assertEq(p.cert.length(), 0, "cert not parsed");
-        assertEq(p.cabundle.length, 0, "cabundle not parsed");
+        // Fields after pcrs: now parsed — the inner break is consumed, not leaked
+        assertEq(p.cert.length(), SYNTH_CERT_LEN, "cert parsed");
+        assertEq(p.cabundle.length, SYNTH_CABUNDLE_COUNT, "cabundle parsed");
+        assertEq(p.cabundle[0].length(), SYNTH_CABUNDLE_CERT_LEN, "cabundle[0] parsed");
+        assertTrue(p.publicKey.isNull(), "public_key parsed");
+        assertTrue(p.userData.isNull(), "user_data parsed");
+        assertTrue(p.nonce.isNull(), "nonce parsed");
+    }
+
+    /// @dev Inner non-empty indefinite-length pcrs map ({0:48B, 1:48B} as 0xBF ... 0xFF)
+    ///      inside a definite-length outer map parses both PCR entries and continues.
+    function test_edge_innerIndefinitePcrsNonEmpty_parses() public view {
+        bytes memory part1 = abi.encodePacked(
+            hex"696d6f64756c655f6964",
+            hex"6474657374", //       module_id: "test"
+            hex"66646967657374",
+            hex"66534841333834", //         digest: "SHA384"
+            hex"6974696d657374616d70",
+            hex"1a000f4240" //        timestamp: 1_000_000
+        );
+        // pcrs: indefinite map {0: 48B, 1: 48B}
+        bytes memory pcrs = abi.encodePacked(
+            hex"6470637273", // key "pcrs"
+            CBOR_MAP_INDEFINITE,
+            hex"005830",
+            new bytes(SYNTH_PCR_LEN), // 0 -> 48B
+            hex"015830",
+            new bytes(SYNTH_PCR_LEN), // 1 -> 48B
+            CBOR_BREAK
+        );
+        bytes memory part3 = abi.encodePacked(
+            hex"6b6365727469666963617465",
+            hex"4400000000", //   certificate: bytes(4)
+            hex"68636162756e646c65",
+            hex"814400000000", //       cabundle: [bytes(4)]
+            hex"6a7075626c69635f6b6579",
+            hex"f6",
+            hex"69757365725f64617461",
+            hex"f6",
+            hex"656e6f6e6365",
+            hex"f6"
+        );
+        bytes memory tbs = _buildTbs(abi.encodePacked(hex"a9", part1, pcrs, part3));
+        NitroValidator.Ptrs memory p = validator.parseAttestation(tbs);
+
+        assertEq(p.pcrs.length, 2, "two pcrs parsed");
+        assertEq(p.pcrs[0].length(), SYNTH_PCR_LEN, "pcr[0] length");
+        assertEq(p.pcrs[1].length(), SYNTH_PCR_LEN, "pcr[1] length");
+        // entries after pcrs still parsed
+        assertEq(p.cert.length(), SYNTH_CERT_LEN, "cert parsed");
+        assertEq(p.cabundle.length, SYNTH_CABUNDLE_COUNT, "cabundle parsed");
     }
 
     // ══════════════════════════════════════════════════════════
     //  NEGATIVE TESTS
     // ══════════════════════════════════════════════════════════
 
-    /// @dev Unknown key in a definite-length map reverts.
-    function test_neg_unknownKeyDefinite_reverts() public {
-        bytes memory badEntry = abi.encodePacked(
-            hex"6362616400", // key  "bad" + padding byte to avoid 0xFF false hit
-            hex"6474657374" // val  "test"
+    /// @dev Unknown key in a definite-length map is skipped; known fields still parse
+    ///      (L1 forward-compatibility fix). The unknown value here is a nested map, to
+    ///      exercise the recursive skipValue path.
+    function test_unknownKeyDefinite_isSkipped() public view {
+        // 9 known entries + 1 unknown ("extra" -> {1: 2}) = 10-entry definite map (0xAA).
+        bytes memory unknownEntry = abi.encodePacked(
+            hex"656578747261", // key  "extra" (text, 5B)
+            hex"a10102" //        val  {1: 2}  (nested 1-entry map)
         );
-        vm.expectRevert("invalid attestation key");
-        validator.parseAttestation(_buildTbs(abi.encodePacked(hex"a1", badEntry)));
+        bytes memory tbs = _buildTbs(abi.encodePacked(hex"aa", _entries(), unknownEntry));
+        _assertSyntheticFields(validator.parseAttestation(tbs));
     }
 
-    /// @dev Unknown key in an indefinite-length map also reverts.
-    function test_neg_unknownKeyIndefinite_reverts() public {
-        bytes memory badEntry = abi.encodePacked(
-            hex"63626164", // key  "bad"
-            hex"6474657374" // val  "test"
+    /// @dev Unknown key in an indefinite-length map is skipped; known fields still parse.
+    ///      The unknown value here is an array, a different skipValue branch.
+    function test_unknownKeyIndefinite_isSkipped() public view {
+        bytes memory unknownEntry = abi.encodePacked(
+            hex"63626164", // key  "bad" (text, 3B)
+            hex"820102" //    val  [1, 2]  (array(2): 0x82, 0x01, 0x02)
         );
-        vm.expectRevert("invalid attestation key");
-        validator.parseAttestation(_buildTbs(abi.encodePacked(CBOR_MAP_INDEFINITE, badEntry, CBOR_BREAK)));
+        bytes memory tbs = _buildTbs(abi.encodePacked(CBOR_MAP_INDEFINITE, _entries(), unknownEntry, CBOR_BREAK));
+        _assertSyntheticFields(validator.parseAttestation(tbs));
+    }
+
+    /// @dev Unknown key whose value is a byte string is skipped by length.
+    function test_unknownKeyByteStringValue_isSkipped() public view {
+        bytes memory unknownEntry = abi.encodePacked(
+            hex"63626164", // key  "bad"
+            hex"43aabbcc" //  val  bytes(3) = 0xAABBCC
+        );
+        bytes memory tbs = _buildTbs(abi.encodePacked(hex"aa", _entries(), unknownEntry));
+        _assertSyntheticFields(validator.parseAttestation(tbs));
     }
 
     /// @dev Indefinite-length map without a trailing 0xFF break marker.
@@ -626,18 +794,60 @@ contract NitroValidatorIndefiniteLengthTest is Test {
     }
 
     /// @dev Indefinite-length outer map containing a non-empty indefinite-length
-    ///      inner cabundle array. The inner array elements are not consumed by
-    ///      the cabundle loop (value=0 for indefinite), so the parser tries to
-    ///      interpret the inner byte-string element as an outer text-string key,
-    ///      reverting with "unexpected type".
-    function test_neg_nestedIndefiniteNonEmptyArray_reverts() public {
+    ///      inner cabundle array now parses every element and continues past the
+    ///      inner break marker (L2 forward-compatibility fix).
+    function test_nestedIndefiniteNonEmptyArray_parses() public view {
         bytes memory entries = abi.encodePacked(
             hex"68636162756e646c65", // key "cabundle"
-            hex"9f", //                indefinite-length array
-            hex"4400000000", //        one bstr element (not consumed by inner loop)
-            hex"ff" //                 inner array break
+            CBOR_ARRAY_INDEFINITE, //   indefinite-length array
+            hex"4401020304", //         element 0: bytes(4)
+            hex"4405060708", //         element 1: bytes(4)
+            CBOR_BREAK //               inner array break
         );
-        vm.expectRevert("unexpected type");
-        validator.parseAttestation(_buildTbs(abi.encodePacked(CBOR_MAP_INDEFINITE, entries, CBOR_BREAK)));
+        bytes memory tbs = _buildTbs(abi.encodePacked(CBOR_MAP_INDEFINITE, entries, CBOR_BREAK));
+        NitroValidator.Ptrs memory p = validator.parseAttestation(tbs);
+        assertEq(p.cabundle.length, 2, "two cabundle elements parsed");
+        assertEq(p.cabundle[0].length(), 4, "cabundle[0] length");
+        assertEq(p.cabundle[1].length(), 4, "cabundle[1] length");
+    }
+
+    /// @dev Indefinite-length inner pcrs map with an odd item count (dangling key) reverts
+    ///      instead of floor-dividing and under-parsing.
+    function test_neg_innerIndefinitePcrsOddItems_reverts() public {
+        bytes memory pcrs = abi.encodePacked(
+            hex"6470637273", // key "pcrs"
+            CBOR_MAP_INDEFINITE,
+            hex"005830",
+            new bytes(SYNTH_PCR_LEN), // 0 -> 48B
+            hex"01", //                  dangling key 1 with no value
+            CBOR_BREAK
+        );
+        bytes memory tbs = _buildTbs(abi.encodePacked(hex"a1", pcrs));
+        vm.expectRevert("invalid pcrs map");
+        validator.parseAttestation(tbs);
+    }
+
+    /// @dev Indefinite-length outer map with no trailing 0xFF break marker reverts (a missing
+    ///      break must not be silently accepted by running into the payload end).
+    function test_neg_indefiniteOuterMapMissingBreak_reverts() public {
+        bytes memory tbs = _buildTbs(abi.encodePacked(CBOR_MAP_INDEFINITE, _partialEntries()));
+        vm.expectRevert("missing break marker");
+        validator.parseAttestation(tbs);
+    }
+
+    /// @dev Empty indefinite-length inner cabundle array ([0x9F, 0xFF]) parses as an
+    ///      empty cabundle and the outer loop continues.
+    function test_nestedIndefiniteEmptyArray_parses() public view {
+        bytes memory entries = abi.encodePacked(
+            hex"68636162756e646c65", // key "cabundle"
+            CBOR_ARRAY_INDEFINITE,
+            CBOR_BREAK,
+            hex"66646967657374",
+            hex"66534841333834" // digest: "SHA384" after cabundle
+        );
+        bytes memory tbs = _buildTbs(abi.encodePacked(CBOR_MAP_INDEFINITE, entries, CBOR_BREAK));
+        NitroValidator.Ptrs memory p = validator.parseAttestation(tbs);
+        assertEq(p.cabundle.length, 0, "cabundle empty");
+        assertEq(p.digest.length(), SYNTH_DIGEST_LEN, "digest after empty cabundle parsed");
     }
 }

@@ -188,17 +188,36 @@ contract NitroValidator {
         LibBytes.memcpy(dest + 13 + rawProtectedLength, payloadSrc, rawPayloadLength);
     }
 
+    /// @dev Parses the COSE payload into pointers, without copying. Forward-compatibility notes:
+    ///      - Unknown map keys are skipped, not rejected, so AWS adding new attestation fields does
+    ///        not brick verification. This is safe because the whole TBS is later checked against
+    ///        AWS's COSE signature, so unknown content is signed and ignoring it cannot change the
+    ///        accept decision.
+    ///      - The outer payload map and the nested `pcrs` map / `cabundle` array are each accepted in
+    ///        both definite-length and indefinite-length CBOR form.
     function _parseAttestation(bytes memory attestationTbs) internal pure returns (Ptrs memory) {
         require(attestationTbs.keccak(0, 18) == ATTESTATION_TBS_PREFIX, "invalid attestation prefix");
 
         CborElement payload = attestationTbs.byteStringAt(18);
-        CborElement current = attestationTbs.mapAt(payload.start());
+        uint256 mapHeaderIx = payload.start();
+        CborElement current = attestationTbs.mapAt(mapHeaderIx);
+        bool outerIndefinite = _isIndefinite(attestationTbs, mapHeaderIx);
+        uint256 entryCount = current.value(); // entry count for a definite-length map
 
         Ptrs memory ptrs;
         uint256 end = payload.end();
-        while (current.end() < end) {
-            // Break marker (0xFF) terminates indefinite-length maps
-            if (uint8(attestationTbs[current.end()]) == 0xff) break;
+        for (uint256 entry = 0;; entry++) {
+            if (outerIndefinite) {
+                // An indefinite-length map is terminated only by a 0xFF break marker. Require it to
+                // be present (do not silently stop at the payload end on a missing break), and stop
+                // exclusively on it.
+                require(current.end() < end, "missing break marker");
+                if (uint8(attestationTbs[current.end()]) == 0xff) break;
+            } else {
+                // A definite-length map ends after exactly `entryCount` entries; a stray 0xFF must
+                // not terminate it early (it would be parsed as a key and rejected as a non-string).
+                if (entry == entryCount) break;
+            }
             current = attestationTbs.nextTextString(current);
             bytes32 keyHash = attestationTbs.keccak(current);
             if (keyHash == MODULE_ID_KEY) {
@@ -223,28 +242,98 @@ contract NitroValidator {
                 current = attestationTbs.nextPositiveInt(current);
                 ptrs.timestamp = uint64(current.value());
             } else if (keyHash == CABUNDLE_KEY) {
-                current = attestationTbs.nextArray(current);
-                ptrs.cabundle = new CborElement[](current.value());
-                for (uint256 i = 0; i < ptrs.cabundle.length; i++) {
-                    current = attestationTbs.nextByteString(current);
-                    ptrs.cabundle[i] = current;
-                }
+                (ptrs.cabundle, current) = _parseCabundle(attestationTbs, current);
             } else if (keyHash == PCRS_KEY) {
-                current = attestationTbs.nextMap(current);
-                ptrs.pcrs = new CborElement[](current.value());
-                for (uint256 i = 0; i < ptrs.pcrs.length; i++) {
-                    current = attestationTbs.nextPositiveInt(current);
-                    uint256 key = current.value();
-                    require(key < ptrs.pcrs.length, "invalid pcr key value");
-                    require(CborElement.unwrap(ptrs.pcrs[key]) == 0, "duplicate pcr key");
-                    current = attestationTbs.nextByteString(current);
-                    ptrs.pcrs[key] = current;
-                }
+                (ptrs.pcrs, current) = _parsePcrs(attestationTbs, current);
             } else {
-                revert("invalid attestation key");
+                // Forward-compatibility: skip (rather than reject) keys this parser does not
+                // recognise. The entire TBS is covered by AWS's COSE signature verified in
+                // {validateAttestationWithHints}, so an unknown key cannot be injected without
+                // invalidating that signature, and ignoring it can only ever drop a field we do
+                // not read — never change the accept decision. Rejecting unknown keys instead
+                // would brick verification the moment AWS adds a new attestation field.
+                uint256 nextIx = attestationTbs.skipValue(current.end());
+                current = LibCborElement.toCborElement(0x00, nextIx, 0);
             }
         }
 
         return ptrs;
+    }
+
+    /// @dev Parses the `cabundle` array (definite- or indefinite-length) starting from the key
+    ///      element `keyPtr`. Returns the parsed cert pointers and the cursor positioned after the
+    ///      array (past the break marker, for indefinite encoding).
+    function _parseCabundle(bytes memory tbs, CborElement keyPtr)
+        private
+        pure
+        returns (CborElement[] memory cabundle, CborElement current)
+    {
+        uint256 headerIx = keyPtr.end();
+        current = tbs.nextArray(keyPtr);
+        bool indefinite = _isIndefinite(tbs, headerIx);
+        uint256 count = indefinite ? _countIndefiniteItems(tbs, current.end()) : current.value();
+        cabundle = new CborElement[](count);
+        for (uint256 i = 0; i < count; i++) {
+            current = tbs.nextByteString(current);
+            cabundle[i] = current;
+        }
+        if (indefinite) current = _consumeBreak(tbs, current);
+    }
+
+    /// @dev Parses the `pcrs` map (definite- or indefinite-length) starting from the key element
+    ///      `keyPtr`. Returns the parsed pcr pointers (indexed by pcr key) and the cursor positioned
+    ///      after the map (past the break marker, for indefinite encoding).
+    function _parsePcrs(bytes memory tbs, CborElement keyPtr)
+        private
+        pure
+        returns (CborElement[] memory pcrs, CborElement current)
+    {
+        uint256 headerIx = keyPtr.end();
+        current = tbs.nextMap(keyPtr);
+        bool indefinite = _isIndefinite(tbs, headerIx);
+        uint256 count;
+        if (indefinite) {
+            // each map entry is a key/value pair, so a well-formed indefinite map holds an even
+            // number of items (2 per pcr); an odd count is malformed and must revert rather than
+            // silently drop the trailing item.
+            uint256 items = _countIndefiniteItems(tbs, current.end());
+            require(items % 2 == 0, "invalid pcrs map");
+            count = items / 2;
+        } else {
+            count = current.value();
+        }
+        pcrs = new CborElement[](count);
+        for (uint256 i = 0; i < count; i++) {
+            current = tbs.nextPositiveInt(current);
+            uint256 key = current.value();
+            require(key < count, "invalid pcr key value");
+            require(CborElement.unwrap(pcrs[key]) == 0, "duplicate pcr key");
+            current = tbs.nextByteString(current);
+            pcrs[key] = current;
+        }
+        if (indefinite) current = _consumeBreak(tbs, current);
+    }
+
+    /// @dev True if the CBOR container header at `headerIx` uses indefinite-length encoding (ai=31).
+    function _isIndefinite(bytes memory cbor, uint256 headerIx) private pure returns (bool) {
+        return (uint8(cbor[headerIx]) & 0x1f) == 31;
+    }
+
+    /// @dev Counts the data items of an indefinite-length container whose first item starts at `ix`,
+    ///      stopping at the 0xFF break marker. Reverts on truncated input (no break before the end).
+    function _countIndefiniteItems(bytes memory cbor, uint256 ix) private pure returns (uint256 count) {
+        while (uint8(cbor[ix]) != 0xff) {
+            ix = cbor.skipValue(ix);
+            count++;
+        }
+    }
+
+    /// @dev Verifies the byte immediately after `ptr` is the 0xFF break marker and returns a
+    ///      zero-length element positioned just past it, so the caller's cursor skips the consumed
+    ///      break. Reverts if the marker is absent (e.g. a nested indefinite container that did not
+    ///      close where the fill loop ended), turning a malformed encoding into a revert.
+    function _consumeBreak(bytes memory cbor, CborElement ptr) private pure returns (CborElement) {
+        require(uint8(cbor[ptr.end()]) == 0xff, "expected break marker");
+        return LibCborElement.toCborElement(0x00, ptr.end() + 1, 0);
     }
 }

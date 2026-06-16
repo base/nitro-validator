@@ -50,7 +50,13 @@ contract CertManager is ICertManager {
 
     // certHash -> VerifiedCert
     mapping(bytes32 => bytes) public verified;
-    // certHash -> parent cert hash used during cold verification
+    // certHash -> parent cert hash used during cold verification.
+    // A cached cert is pinned to the parent it was FIRST verified under: warm reuse requires the
+    // caller to present this exact parent (see the mismatch check in `_verifyCert`). This is
+    // intentional — warm reuse skips signature verification, so it must reflect the precise chain
+    // that was cryptographically checked. A same-key CA renewal (new DER, new parent hash) cannot
+    // re-bind an already-cached descendant until its cache entry expires; harmless for Nitro because
+    // leaves are short-lived. See docs/hinted-p384-nitro-attestation.md "First-verified parent pinning".
     mapping(bytes32 => bytes32) internal verifiedParent;
     // certHash -> revocation identity key (keccak256(issuerHash, serialHash)), recorded at cold
     // verification so the warm path and parent-chain walk can check revocation without re-parsing.
