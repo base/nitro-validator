@@ -59,6 +59,48 @@ contract P384HintCollector {
         }
     }
 
+    /// @dev Like {collectVerifyHints} but does NOT require the signature to verify. The inverse
+    ///      hints are gathered during the verification trace (before the final curve equation is
+    ///      checked), so this returns a complete, self-consistent hint stream even for a signature
+    ///      that ultimately fails — letting a test prove the final ECDSA check (not just the hint
+    ///      gate) is what rejects a well-hinted invalid signature. Returns the hints and `ok`
+    ///      (whether the signature actually verified).
+    function collectVerifyHintsAllowInvalid(bytes memory hash, bytes memory signature, bytes memory pubKey)
+        public
+        returns (bytes memory hints, bool ok)
+    {
+        assembly {
+            tstore(0, 0)
+            tstore(1, 0)
+            tstore(2, 0)
+            tstore(7, 0)
+            tstore(8, 1)
+        }
+
+        ok = ECDSA384HintCollectorLib.verify(_hintParams(), hash, signature, pubKey);
+
+        uint256 count;
+        uint256 inv;
+        assembly {
+            count := tload(2)
+            inv := tload(0)
+            tstore(8, 0)
+        }
+        require(count == inv, "inverse collection mismatch");
+
+        hints = new bytes(count * 48);
+        for (uint256 i = 0; i < count; ++i) {
+            assembly {
+                let slot_ := add(1000, mul(i, 2))
+                let hi := tload(slot_)
+                let lo := tload(add(slot_, 1))
+                let dst_ := add(add(hints, 0x20), mul(i, 48))
+                mstore(dst_, shl(128, hi))
+                mstore(add(dst_, 0x10), lo)
+            }
+        }
+    }
+
     function collectCertSignatureHints(bytes memory certificate, bytes memory parentPubKey)
         external
         returns (bytes memory)

@@ -10,6 +10,59 @@ import {CborDecode} from "../../src/CborDecode.sol";
 import {P384Verifier} from "../../src/P384Verifier.sol";
 import {Sha2Ext} from "../../src/Sha2Ext.sol";
 import {P384HintCollector} from "../helpers/HintedNitroTestHelpers.sol";
+import {U384} from "../../src/vendor/ECDSA384.sol";
+
+/// @dev Thin wrapper exposing U384's internal modinv / moddivAssign so hint-soundness
+///      properties (non-canonical inverses, modulus confusion) can be tested in isolation.
+contract U384TestWrapper {
+    /// @dev Canonical b^{-1} mod m via the non-hinted Fermat path; returns 48-byte big-endian.
+    function computeModinvNoHint(bytes memory bBytes, bytes memory mBytes) external view returns (bytes memory result) {
+        uint256 m = U384.init(mBytes);
+        uint256 b = U384.init(bBytes);
+        uint256 call_ = U384.initCall(m);
+        result = _u384ToBytes(U384.modinv(call_, b, m));
+    }
+
+    /// @dev modinv(b, m) consuming a single 48-byte hint; reverts "bad inverse hint" unless
+    ///      b * hint == 1 (mod m). Returns the raw (possibly non-canonical) hint value.
+    function callModinvWithHint(bytes memory bBytes, bytes memory mBytes, bytes memory hint)
+        external
+        view
+        returns (bytes memory result)
+    {
+        require(hint.length == 48, "hint must be 48 bytes");
+        uint256 m = U384.init(mBytes);
+        uint256 b = U384.init(bBytes);
+        uint256 call_ = U384.initCallWithHints(m, hint);
+        result = _u384ToBytes(U384.modinv(call_, b, m));
+    }
+
+    /// @dev a/b mod p via moddivAssign using a single 48-byte hint for b^{-1} (p is the baked
+    ///      MODEXP modulus). Reverts "bad inverse hint" if b * hint != 1 (mod p).
+    function callModdivAssignWithHint(bytes memory aBytes, bytes memory bBytes, bytes memory pBytes, bytes memory hint)
+        external
+        view
+        returns (bytes memory result)
+    {
+        require(hint.length == 48, "hint must be 48 bytes");
+        uint256 p = U384.init(pBytes);
+        uint256 a = U384.init(aBytes);
+        uint256 b = U384.init(bBytes);
+        uint256 call_ = U384.initCallWithHints(p, hint);
+        U384.moddivAssign(call_, a, b);
+        result = _u384ToBytes(a);
+    }
+
+    /// @dev Serialise a U384 pointer (64-byte slot) to 48-byte big-endian bytes.
+    function _u384ToBytes(uint256 ptr) internal pure returns (bytes memory result) {
+        result = new bytes(48);
+        assembly {
+            let dst := add(result, 0x20)
+            mstore(dst, shl(128, mload(ptr)))
+            mstore(add(dst, 0x10), mload(add(ptr, 0x20)))
+        }
+    }
+}
 
 contract NitroValidatorParseHarness is NitroValidator {
     constructor(CertManager certManager, P384Verifier p384Verifier) NitroValidator(certManager, p384Verifier) {}
@@ -31,6 +84,20 @@ contract HintedNitroAttestationTest is Test {
     NitroValidatorParseHarness parser;
     P384Verifier p384Verifier;
     P384HintCollector hintCollector;
+    U384TestWrapper u384;
+
+    // P-384 field modulus p (48-byte big-endian).
+    bytes constant CURVE_P =
+        hex"fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffeffffffff0000000000000000ffffffff";
+    // P-384 group order n (48-byte big-endian).
+    bytes constant CURVE_N =
+        hex"ffffffffffffffffffffffffffffffffffffffffffffffffc7634d81f4372ddf581a0db248b0a77aecec196accc52973";
+    // 7 + p (7 < 2^128, so this fits in 48 bytes): a non-canonical representative of 7 mod p.
+    bytes constant SEVEN_PLUS_P =
+        hex"fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffeffffffff000000000000000100000006";
+    // P-384 order split into (hi128, lo256) for forming the malleable twin (r, n-s).
+    uint128 constant N_HI = type(uint128).max;
+    uint256 constant N_LO = 0xffffffffffffffffc7634d81f4372ddf581a0db248b0a77aecec196accc52973;
 
     struct SequenceSummary {
         ICertManager.VerifiedCert leaf;
@@ -52,6 +119,178 @@ contract HintedNitroAttestationTest is Test {
         validator = new NitroValidator(certManager, p384Verifier);
         parser = new NitroValidatorParseHarness(certManager, p384Verifier);
         hintCollector = new P384HintCollector();
+        u384 = new U384TestWrapper();
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────────
+    //  Hint-verification soundness & signature semantics (from the security review)
+    // ─────────────────────────────────────────────────────────────────────────────
+
+    /// @dev A non-canonical inverse hint (inv + p, still < 2^384) passes the on-chain
+    ///      `b·inv ≡ 1 (mod p)` check AND yields the identical reduced result as the
+    ///      canonical hint, so unreduced hints can never change the accept decision.
+    ///      Exercised at the U384 level: real 384-bit inverses are ~2^384 and their
+    ///      `inv + p` would overflow 48 bytes, so a small inverse (7) is used to make the
+    ///      non-canonical representative constructible.
+    function test_UnreducedInverseHintIsSound() public view {
+        bytes memory seven = new bytes(48);
+        seven[47] = 0x07;
+        bytes memory one = new bytes(48);
+        one[47] = 0x01;
+
+        // b = 7^{-1} mod p, so the canonical inverse of b is 7.
+        bytes memory b = u384.computeModinvNoHint(seven, CURVE_P);
+
+        // modinv accepts both the canonical hint (7) and the non-canonical (7 + p), returning each verbatim.
+        assertEq(u384.callModinvWithHint(b, CURVE_P, seven), seven, "canonical hint accepted");
+        assertEq(u384.callModinvWithHint(b, CURVE_P, SEVEN_PLUS_P), SEVEN_PLUS_P, "unreduced hint accepted");
+
+        // moddivAssign(1, b) = 1/b mod p = 7 for BOTH hints — identical reduced result.
+        bytes memory canon = u384.callModdivAssignWithHint(one, b, CURVE_P, seven);
+        bytes memory unreduced = u384.callModdivAssignWithHint(one, b, CURVE_P, SEVEN_PLUS_P);
+        assertEq(canon, seven, "canonical hint computes 7");
+        assertEq(unreduced, seven, "unreduced hint computes 7");
+        assertEq(canon, unreduced, "unreduced hint yields identical result -> cannot affect accept");
+    }
+
+    /// @dev A hint that is a valid inverse modulo n is rejected when consumed where modulo p
+    ///      is expected. Guards against modulus confusion between the mod-n (scalar) and
+    ///      mod-p (field) inversion paths.
+    function test_ModulusConfusionHintReverts() public {
+        bytes memory seven = new bytes(48);
+        seven[47] = 0x07;
+
+        bytes memory inv7modN = u384.computeModinvNoHint(seven, CURVE_N);
+        // Correct modulus: accepted.
+        assertEq(u384.callModinvWithHint(seven, CURVE_N, inv7modN), inv7modN, "mod-n hint valid for mod-n");
+        // Wrong modulus: 7 * (7^{-1} mod n) mod p != 1 -> rejected.
+        vm.expectRevert("bad inverse hint");
+        u384.callModinvWithHint(seven, CURVE_P, inv7modN);
+    }
+
+    /// @dev With a corrupted attestation signature, NO attacker-chosen hint stream forces
+    ///      acceptance. Two distinct gates are exercised:
+    ///      1. hints NOT self-consistent with the corrupted signature (empty / garbage / the
+    ///         original-valid / padded) revert at the inverse-hint check (`b·inv ≡ 1`); and
+    ///      2. hints that ARE self-consistent with the corrupted signature pass every inverse-hint
+    ///         check, but the signature still fails the final ECDSA curve equation, so verification
+    ///         returns false rather than reverting at the hint gate.
+    function test_CorruptedSignatureNeverAccepts() public {
+        bytes memory attestation = _repairMissingPublicKeyBytes(_decodeBase64(_realAttestationB64()));
+        (bytes memory attestationTbs, bytes memory signature) = validator.decodeAttestationTbs(attestation);
+        ICertManager.VerifiedCert memory leaf = _cacheCertBundleWithHints(attestationTbs);
+        bytes memory hash = Sha2Ext.sha384(attestationTbs, 0, attestationTbs.length);
+
+        bytes memory validHints = hintCollector.collectVerifyHints(hash, signature, leaf.pubKey);
+
+        bytes memory corrupted = new bytes(signature.length);
+        for (uint256 i = 0; i < signature.length; ++i) {
+            corrupted[i] = signature[i];
+        }
+        // Flip a low bit of s's leading byte. This keeps s well within range, so the gate that
+        // fires below is the inverse-hint check, not a scalar range check.
+        corrupted[48] = bytes1(uint8(corrupted[48]) ^ 0x01);
+
+        // (1) Hints not self-consistent with `corrupted` revert at the inverse-hint check.
+        vm.expectRevert("inverse hint underflow");
+        p384Verifier.verifyP384SignatureWithHints(hash, corrupted, leaf.pubKey, "");
+
+        vm.expectRevert("bad inverse hint");
+        p384Verifier.verifyP384SignatureWithHints(hash, corrupted, leaf.pubKey, new bytes(48));
+
+        vm.expectRevert("bad inverse hint");
+        p384Verifier.verifyP384SignatureWithHints(hash, corrupted, leaf.pubKey, validHints);
+
+        vm.expectRevert("bad inverse hint");
+        p384Verifier.verifyP384SignatureWithHints(
+            hash, corrupted, leaf.pubKey, abi.encodePacked(validHints, new bytes(48))
+        );
+
+        // (2) Hints correctly computed FOR the corrupted signature satisfy every inverse-hint check,
+        //     so we get past the hint gate — but the signature is still invalid, so the final curve
+        //     check fails and verification returns false (never accepts). The hint stream is gathered
+        //     during the verification trace, so it is self-consistent even though the trace reports
+        //     the signature as invalid.
+        (bytes memory corruptedHints, bool traceOk) =
+            hintCollector.collectVerifyHintsAllowInvalid(hash, corrupted, leaf.pubKey);
+        assertFalse(traceOk, "corrupted signature must not pass the collector's verification trace");
+        assertFalse(
+            p384Verifier.verifyP384SignatureWithHints(hash, corrupted, leaf.pubKey, corruptedHints),
+            "corrupted signature with self-consistent hints must not verify"
+        );
+    }
+
+    /// @dev Signature malleability is intentional (CURVE_LOW_S_MAX = n-1): for a valid (r, s)
+    ///      the twin (r, n-s) also verifies. Both are accepted and decode to the identical
+    ///      attestation, so integrators must NOT use raw signature bytes as a uniqueness key.
+    function test_MalleableTwinSignatureAccepted() public {
+        bytes memory attestationTbs;
+        bytes memory sig;
+        {
+            bytes memory attestation = _repairMissingPublicKeyBytes(_decodeBase64(_realAttestationB64()));
+            (attestationTbs, sig) = validator.decodeAttestationTbs(attestation);
+        }
+        ICertManager.VerifiedCert memory leaf = _cacheCertBundleWithHints(attestationTbs);
+        bytes memory hash = Sha2Ext.sha384(attestationTbs, 0, attestationTbs.length);
+
+        bytes memory twin = _computeTwinSig(sig);
+        assertTrue(keccak256(sig) != keccak256(twin), "twin must differ from original");
+
+        bytes memory hints = hintCollector.collectVerifyHints(hash, sig, leaf.pubKey);
+        bytes memory twinHints = hintCollector.collectVerifyHints(hash, twin, leaf.pubKey);
+
+        assertTrue(p384Verifier.verifyP384SignatureWithHints(hash, sig, leaf.pubKey, hints), "original verifies");
+        assertTrue(
+            p384Verifier.verifyP384SignatureWithHints(hash, twin, leaf.pubKey, twinHints),
+            "malleable twin (r, n-s) also verifies"
+        );
+
+        NitroValidator.Ptrs memory p1 = validator.validateAttestationWithHints(attestationTbs, sig, hints);
+        NitroValidator.Ptrs memory p2 = validator.validateAttestationWithHints(attestationTbs, twin, twinHints);
+        assertEq(p1.timestamp, p2.timestamp, "both twins decode to the same attestation");
+    }
+
+    /// @dev validateAttestationWithHints has no on-chain anti-replay: the same (tbs, sig)
+    ///      verifies repeatedly until the leaf cert expires. Freshness/replay protection is
+    ///      the integrator's responsibility (documented in NatSpec).
+    function test_AttestationReplayHasNoOnChainProtection() public {
+        bytes memory attestation = _repairMissingPublicKeyBytes(_decodeBase64(_realAttestationB64()));
+        (bytes memory attestationTbs, bytes memory sig) = validator.decodeAttestationTbs(attestation);
+        ICertManager.VerifiedCert memory leaf = _cacheCertBundleWithHints(attestationTbs);
+        bytes memory hash = Sha2Ext.sha384(attestationTbs, 0, attestationTbs.length);
+        bytes memory hints = hintCollector.collectVerifyHints(hash, sig, leaf.pubKey);
+
+        uint256 ts1 = validator.validateAttestationWithHints(attestationTbs, sig, hints).timestamp;
+        uint256 ts2 = validator.validateAttestationWithHints(attestationTbs, sig, hints).timestamp;
+        assertEq(ts1, ts2, "same attestation accepted twice (no replay protection)");
+    }
+
+    /// @dev Builds the malleable twin (r, n-s) from a 96-byte packed (r||s) signature.
+    function _computeTwinSig(bytes memory sig) internal pure returns (bytes memory twin) {
+        require(sig.length == 96, "sig must be 96 bytes");
+        uint128 rhi;
+        uint256 rlo;
+        uint128 shi;
+        uint256 slo;
+        assembly {
+            let data := add(sig, 0x20)
+            rhi := shr(128, mload(data))
+            rlo := mload(add(data, 0x10))
+            shi := shr(128, mload(add(data, 0x30)))
+            slo := mload(add(data, 0x40))
+        }
+        uint128 thi;
+        uint256 tlo;
+        if (N_LO >= slo) {
+            tlo = N_LO - slo;
+            thi = N_HI - shi;
+        } else {
+            unchecked {
+                tlo = N_LO - slo;
+            }
+            thi = N_HI - shi - 1;
+        }
+        twin = abi.encodePacked(rhi, rlo, thi, tlo);
     }
 
     function test_HintedAttestationRejectsSurplusHint() public {
