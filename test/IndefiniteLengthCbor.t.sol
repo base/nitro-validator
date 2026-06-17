@@ -835,6 +835,22 @@ contract NitroValidatorIndefiniteLengthTest is Test {
         validator.parseAttestation(tbs);
     }
 
+    /// @dev Definite-length outer maps must consume the whole payload byte string; trailing bytes
+    ///      after the declared entries are malformed, even if the declared prefix parses cleanly.
+    function test_neg_definiteOuterMapTrailingBytes_reverts() public {
+        bytes memory tbs = _buildTbs(abi.encodePacked(hex"a2", _partialEntries(), hex"00"));
+        vm.expectRevert("trailing payload bytes");
+        validator.parseAttestation(tbs);
+    }
+
+    /// @dev Indefinite-length outer maps must end immediately after their 0xFF break marker; bytes
+    ///      after the break are not silently ignored.
+    function test_neg_indefiniteOuterMapTrailingBytesAfterBreak_reverts() public {
+        bytes memory tbs = _buildTbs(abi.encodePacked(CBOR_MAP_INDEFINITE, _partialEntries(), CBOR_BREAK, hex"00"));
+        vm.expectRevert("trailing payload bytes");
+        validator.parseAttestation(tbs);
+    }
+
     /// @dev Empty indefinite-length inner cabundle array ([0x9F, 0xFF]) parses as an
     ///      empty cabundle and the outer loop continues.
     function test_nestedIndefiniteEmptyArray_parses() public view {
