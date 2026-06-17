@@ -212,11 +212,17 @@ contract NitroValidator {
                 // be present (do not silently stop at the payload end on a missing break), and stop
                 // exclusively on it.
                 require(current.end() < end, "missing break marker");
-                if (uint8(attestationTbs[current.end()]) == 0xff) break;
+                if (uint8(attestationTbs[current.end()]) == 0xff) {
+                    require(current.end() + 1 == end, "trailing payload bytes");
+                    break;
+                }
             } else {
                 // A definite-length map ends after exactly `entryCount` entries; a stray 0xFF must
                 // not terminate it early (it would be parsed as a key and rejected as a non-string).
-                if (entry == entryCount) break;
+                if (entry == entryCount) {
+                    require(current.end() == end, "trailing payload bytes");
+                    break;
+                }
             }
             current = attestationTbs.nextTextString(current);
             bytes32 keyHash = attestationTbs.keccak(current);
