@@ -602,15 +602,22 @@ benign format change cannot brick verification until a contract upgrade:
   assumed a definite count, so an encoder switch to indefinite length would have
   silently produced an empty `pcrs` / `cabundle` (and, via a leaked inner break marker,
   truncated the rest of the map).
+- **Recognised fields are single-assignment.** Duplicate top-level keys that affect the
+  returned pointers (`pcrs`, `cabundle`, `certificate`, `moduleID`, and the other parsed
+  attestation fields) are rejected instead of using last-write-wins semantics. Duplicate
+  unknown keys are still skipped for forward compatibility.
+- **The signed payload must be fully consumed.** Definite-length maps cannot leave
+  trailing bytes after the declared entries, indefinite-length maps cannot leave bytes
+  after the break marker, and the COSE payload byte string must be the final item in
+  `attestationTbs`.
 
-Both behaviours are **liveness-only and cannot cause a false accept**: the entire
+These behaviours are **liveness-only and cannot cause a false accept**: the entire
 to-be-signed payload is hashed and checked against AWS's COSE signature in
 `validateAttestationWithHints`. Skipped or re-encoded content is therefore signed by
 AWS, and a field the parser ignores cannot influence the accept decision — at most it
 is not surfaced to the caller. Fields the contract *does* read (`pcrs`, `cabundle`,
-`certificate`, `moduleID`, …) are parsed exactly as before. A malformed or truncated
-encoding still reverts (out-of-bounds read or unterminated indefinite container), it
-just never silently mis-parses.
+`certificate`, `moduleID`, …) must appear at most once. A malformed, truncated, or
+partially unparsed encoding reverts instead of silently mis-parsing.
 
 ## 11. On-chain demo
 

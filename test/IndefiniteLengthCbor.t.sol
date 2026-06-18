@@ -366,6 +366,12 @@ contract NitroValidatorIndefiniteLengthTest is Test {
         assertTrue(p.nonce.isNull(), "nonce null");
     }
 
+    function _assertDuplicateKnownKeyReverts(bytes memory duplicateEntry) internal {
+        bytes memory tbs = _buildTbs(abi.encodePacked(hex"aa", _entries(), duplicateEntry));
+        vm.expectRevert("duplicate attestation key");
+        validator.parseAttestation(tbs);
+    }
+
     // ── TBS construction helpers ─────────────────────────────
 
     /// @dev Wraps raw CBOR map bytes into a valid attestation-TBS envelope.
@@ -781,6 +787,79 @@ contract NitroValidatorIndefiniteLengthTest is Test {
         );
         bytes memory tbs = _buildTbs(abi.encodePacked(hex"aa", _entries(), unknownEntry));
         _assertSyntheticFields(validator.parseAttestation(tbs));
+    }
+
+    /// @dev Repeated unknown keys are still skipped for forward compatibility. Only duplicate
+    ///      recognised fields are rejected, because those fields affect the returned Ptrs.
+    function test_unknownDuplicateKeys_areSkipped() public view {
+        bytes memory unknownEntry = abi.encodePacked(
+            hex"656578747261", // key  "extra"
+            hex"a10102" //        val  {1: 2}
+        );
+        bytes memory tbs = _buildTbs(abi.encodePacked(hex"ab", _entries(), unknownEntry, unknownEntry));
+        _assertSyntheticFields(validator.parseAttestation(tbs));
+    }
+
+    /// @dev Duplicate pcrs must not overwrite the first parsed measurement set.
+    function test_neg_duplicatePcrs_reverts() public {
+        bytes memory duplicatePcrs = abi.encodePacked(
+            hex"6470637273", // key "pcrs"
+            hex"a1005830",
+            new bytes(SYNTH_PCR_LEN)
+        );
+        _assertDuplicateKnownKeyReverts(duplicatePcrs);
+    }
+
+    /// @dev Duplicate certificate must not overwrite the leaf certificate pointer.
+    function test_neg_duplicateCertificate_reverts() public {
+        bytes memory duplicateCertificate = abi.encodePacked(
+            hex"6b6365727469666963617465", // key "certificate"
+            hex"4401020304" //               val bytes(4)
+        );
+        _assertDuplicateKnownKeyReverts(duplicateCertificate);
+    }
+
+    /// @dev Duplicate cabundle must not overwrite the CA bundle pointer array.
+    function test_neg_duplicateCabundle_reverts() public {
+        bytes memory duplicateCabundle = abi.encodePacked(
+            hex"68636162756e646c65", // key "cabundle"
+            hex"814401020304" //       val [bytes(4)]
+        );
+        _assertDuplicateKnownKeyReverts(duplicateCabundle);
+    }
+
+    function test_neg_duplicateRequiredScalars_revert() public {
+        _assertDuplicateKnownKeyReverts(abi.encodePacked(hex"696d6f64756c655f6964", hex"6474657374"));
+        _assertDuplicateKnownKeyReverts(abi.encodePacked(hex"66646967657374", hex"66534841333834"));
+        _assertDuplicateKnownKeyReverts(abi.encodePacked(hex"6974696d657374616d70", hex"1a000f4240"));
+    }
+
+    function test_neg_duplicateOptionalFields_revert() public {
+        _assertDuplicateKnownKeyReverts(abi.encodePacked(hex"6a7075626c69635f6b6579", hex"f6"));
+        _assertDuplicateKnownKeyReverts(abi.encodePacked(hex"69757365725f64617461", hex"f6"));
+        _assertDuplicateKnownKeyReverts(abi.encodePacked(hex"656e6f6e6365", hex"f6"));
+    }
+
+    /// @dev Definite maps must consume the full payload map; declared-count parsing cannot leave
+    ///      signed bytes after the final parsed value.
+    function test_neg_definiteOuterMapTrailingData_reverts() public {
+        bytes memory tbs = _buildTbs(abi.encodePacked(hex"a9", _entries(), hex"00"));
+        vm.expectRevert("trailing payload bytes");
+        validator.parseAttestation(tbs);
+    }
+
+    /// @dev Indefinite maps must consume the break marker as the final payload byte.
+    function test_neg_indefiniteOuterMapTrailingDataAfterBreak_reverts() public {
+        bytes memory tbs = _buildTbs(abi.encodePacked(CBOR_MAP_INDEFINITE, _entries(), CBOR_BREAK, hex"00"));
+        vm.expectRevert("trailing payload bytes");
+        validator.parseAttestation(tbs);
+    }
+
+    /// @dev The COSE payload byte string must be the last item in attestationTbs.
+    function test_neg_tbsTrailingBytesAfterPayload_reverts() public {
+        bytes memory tbs = abi.encodePacked(_buildTbs(abi.encodePacked(hex"a9", _entries())), hex"00");
+        vm.expectRevert("trailing tbs data");
+        validator.parseAttestation(tbs);
     }
 
     /// @dev Indefinite-length map without a trailing 0xFF break marker.
