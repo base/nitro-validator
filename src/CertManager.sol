@@ -469,7 +469,8 @@ contract CertManager is ICertManager {
 
     function _verifyKeyUsageExtension(bytes memory certificate, Asn1Ptr valuePtr, bool ca) internal pure {
         uint256 value = certificate.bitstringUintAt(valuePtr);
-        // bits are reversed (DigitalSignature 0x01 => 0x80, CertSign 0x32 => 0x04)
+        // X.509 KeyUsage bits are MSB-first. bitstringUintAt keeps the first KeyUsage octet in the
+        // low byte, so these masks continue to target the same bits for one- or multi-octet values.
         if (ca) {
             require(value & 0x04 == 0x04, "CertSign must be present");
         } else {

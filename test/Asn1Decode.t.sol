@@ -28,6 +28,10 @@ contract Asn1Harness {
         return der.bitstring(der.root()).content();
     }
 
+    function bitstringUintAtRoot(bytes memory der) external pure returns (uint256) {
+        return der.bitstringUintAt(der.root());
+    }
+
     function firstChildHeader(bytes memory der) external pure returns (uint256) {
         return der.firstChildOf(der.root()).header();
     }
@@ -129,6 +133,41 @@ contract Asn1DecodeTest is Test {
     function test_bitstring_nonZeroPadded_reverts() public {
         vm.expectRevert("Non-0-padded BIT STRING");
         h.bitstringContent(hex"03020100"); // pad byte is 0x01, not 0x00
+    }
+
+    function test_bitstringUintAt_oneByteKeyUsage() public view {
+        // X.509 KeyUsage bit 0 (digitalSignature): one content byte, 7 unused low bits.
+        assertEq(h.bitstringUintAtRoot(hex"03020780"), 0x80);
+    }
+
+    function test_bitstringUintAt_twoByteKeyUsageNormalizesFirstOctet() public view {
+        // X.509 KeyUsage bits 5 and 8 (keyCertSign | decipherOnly). The first content octet must
+        // remain in the low byte so CertManager's 0x04 keyCertSign mask still targets bit 5.
+        uint256 keyCertSignAndDecipherOnly = h.bitstringUintAtRoot(hex"0303070480");
+        assertEq(keyCertSignAndDecipherOnly & 0x04, 0x04, "keyCertSign must stay in low byte");
+        assertEq(keyCertSignAndDecipherOnly & 0x80, 0, "decipherOnly must not alias digitalSignature");
+        assertEq(keyCertSignAndDecipherOnly, 0x8004);
+    }
+
+    function test_bitstringUintAt_twoByteDecipherOnlyDoesNotAliasDigitalSignature() public view {
+        uint256 decipherOnly = h.bitstringUintAtRoot(hex"0303070080");
+        assertEq(decipherOnly & 0x80, 0, "decipherOnly must not satisfy digitalSignature");
+        assertEq(decipherOnly, 0x8000);
+    }
+
+    function test_bitstringUintAt_nonZeroUnusedBits_reverts() public {
+        vm.expectRevert("Non-zero unused BIT STRING bits");
+        h.bitstringUintAtRoot(hex"03030700ff");
+    }
+
+    function test_bitstringUintAt_invalidUnusedBits_reverts() public {
+        vm.expectRevert("invalid BIT STRING padding");
+        h.bitstringUintAtRoot(hex"03020880");
+    }
+
+    function test_bitstringUintAt_missingUnusedBits_reverts() public {
+        vm.expectRevert("invalid BIT STRING length");
+        h.bitstringUintAtRoot(hex"0300");
     }
 
     // --- firstChildOf ---
