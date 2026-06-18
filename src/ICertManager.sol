@@ -18,6 +18,8 @@ interface ICertManager {
 
     function revoked(bytes32 certHash) external view returns (bool);
 
+    /// @return The cache key to use as the parent for child certs: ROOT_CA_CERT_HASH for the pinned
+    ///         root, otherwise keccak256(tbsCertificate).
     function verifyCACertWithHints(bytes memory cert, bytes32 parentCertHash, bytes memory signatureHints)
         external
         returns (bytes32);
@@ -26,7 +28,7 @@ interface ICertManager {
         external
         returns (VerifiedCert memory);
 
-    /// @notice Raw cache read. A returned cert may be expired or revoked.
+    /// @notice Raw cache read by verification cache key. A returned cert may be expired or revoked.
     function loadVerified(bytes32 certHash) external view returns (VerifiedCert memory);
 
     function isRevoked(bytes32 certHash) external view returns (bool);

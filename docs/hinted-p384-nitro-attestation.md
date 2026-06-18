@@ -361,8 +361,9 @@ document signature.
 Once the leaf and its CA chain are cached and unexpired, a later attestation signed by
 the same leaf is a **single transaction** (`validateAttestationWithHints`) carrying
 only the COSE signature hints. The cabundle certs are not re-verified — they are
-reloaded by `keccak256(cert)` identity, checked against their original cached parent,
-and their cached metadata is re-checked.
+reloaded by verification cache key (`ROOT_CA_CERT_HASH` for the pinned root,
+`keccak256(tbsCertificate)` for non-root certs), checked against their original cached
+parent, and their cached metadata is re-checked.
 
 Practical reuse cases:
 
@@ -371,12 +372,12 @@ Practical reuse cases:
   document → 2 transactions;
 - **CA chain and leaf cached:** validate the document only → 1 transaction.
 
-**Cache reuse** is allowed when: the submitted DER hashes to a cached cert; the cert
-is unexpired (`notAfter ≥ block.timestamp`); the cached CA/client role matches; and
-`parentCertHash` matches the parent used during cold verification; and neither the cert
-nor its cached parent chain is revoked. The cache is global on-chain state — once any
-caller verifies a cert, others reuse it until expiry or revocation, but only under the
-same parent binding.
+**Cache reuse** is allowed when: the submitted DER contains a TBS that hashes to a
+cached cert; the cert is unexpired (`notAfter ≥ block.timestamp`); the cached CA/client
+role matches; `parentCertHash` matches the parent used during cold verification; and
+neither the cert nor its cached parent chain is revoked. The cache is global on-chain
+state — once any caller verifies a cert, others reuse it until expiry or revocation,
+but only under the same parent binding.
 
 ### Revocation model
 AWS's Nitro attestation documentation disables CRL checking in its sample validation
@@ -410,23 +411,24 @@ cached descendant cannot keep verifying through an ancestor that was later revok
 Revocation is checked independently of `notAfter`, so a revoked cert is untrusted even if
 its X.509 validity period has not expired.
 
-`loadVerified` is intentionally a raw cache read. A non-empty return value means the cert
-metadata was cached previously; it does not imply the cert is currently trusted, unexpired,
-or unrevoked.
+`loadVerified` is intentionally a raw cache read by verification cache key. A non-empty
+return value means the cert metadata was cached previously; it does not imply the cert is
+currently trusted, unexpired, or unrevoked.
 
 **First-verified parent pinning.** A cached cert is pinned to the parent it was first
-verified under: cold verification records `verifiedParent[certHash]` once, and every
-later warm reuse requires the caller to present that exact `parentCertHash` (a mismatch
-reverts with `parent cert mismatch`). This is a deliberate, conservative binding — warm
-reuse skips signature verification, so it must reflect the precise chain that was
-cryptographically checked, not merely *a* valid same-subject issuer. The liveness
-consequence is that if the same certificate is genuinely issued under two different CA
-objects (for example a same-key CA renewal that produces new DER bytes, hence a new
-parent hash), the cached leaf keeps verifying only through its first parent; a second
-caller chaining it through the renewed parent must wait for the cached entry to expire.
-For AWS Nitro this is effectively a non-issue because leaf certificates are short-lived
-(~3h) and expire long before their issuing CA is rotated, so the binding self-heals; it
-is documented here as a known edge rather than a fixed bug.
+verified under: cold verification records `verifiedParent[certHash]` once, where
+`certHash` is the canonical cache key, and every later warm reuse requires the caller to
+present that exact `parentCertHash` (a mismatch reverts with `parent cert mismatch`).
+This is a deliberate, conservative binding — warm reuse skips signature verification,
+so it must reflect the precise chain that was cryptographically checked, not merely *a*
+valid same-subject issuer. The liveness consequence is that if the same certificate is
+genuinely issued under two different CA objects (for example a same-key CA renewal that
+produces a new TBS, hence a new parent hash), the cached leaf keeps verifying only
+through its first parent; a second caller chaining it through the renewed parent must
+wait for the cached entry to expire. For AWS Nitro this is effectively a non-issue
+because leaf certificates are short-lived (~3h) and expire long before their issuing CA
+is rotated, so the binding self-heals; it is documented here as a known edge rather than
+a fixed bug.
 
 **Warm-only guard.** `validateAttestationWithHints` re-runs the cabundle checks with an
 *empty* hint stream. Cached certs return before signature verification; a missing cert

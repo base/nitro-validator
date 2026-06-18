@@ -2,6 +2,7 @@
 pragma solidity ^0.8.26;
 
 import {Script, console2} from "forge-std/Script.sol";
+import {Asn1Decode, LibAsn1Ptr, Asn1Ptr} from "../src/Asn1Decode.sol";
 import {CborDecode, CborElement, LibCborElement} from "../src/CborDecode.sol";
 import {CertManagerDemo} from "../test/helpers/CertManagerDemo.sol";
 import {ICertManager} from "../src/ICertManager.sol";
@@ -20,7 +21,9 @@ contract NitroValidatorScriptParser is NitroValidator {
 
 /// @dev Uses vm.ffi to run the off-chain hint tools; invoke the script with Foundry's `--ffi` flag.
 contract BaseSepoliaDemo is Script {
+    using Asn1Decode for bytes;
     using CborDecode for bytes;
+    using LibAsn1Ptr for Asn1Ptr;
     using LibBytes for bytes;
     using LibCborElement for CborElement;
 
@@ -97,7 +100,13 @@ contract BaseSepoliaDemo is Script {
         leaf = certManager.verifyClientCertWithHints(clientCert, parentHash, clientHints);
         require(leaf.pubKey.length > 0, "leaf not cached");
         console2.log("cached client cert");
-        console2.logBytes32(keccak256(clientCert));
+        console2.logBytes32(_certCacheKey(clientCert));
+    }
+
+    function _certCacheKey(bytes memory certificate) internal pure returns (bytes32) {
+        Asn1Ptr root = certificate.root();
+        Asn1Ptr tbsCertPtr = certificate.firstChildOf(root);
+        return certificate.keccak(tbsCertPtr.header(), tbsCertPtr.totalLength());
     }
 
     function _loadAttestation() internal returns (bytes memory) {
