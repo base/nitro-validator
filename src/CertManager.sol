@@ -518,10 +518,10 @@ contract CertManager is ICertManager {
         int64 maxPathLen;
         bytes32 subjectHash;
         assembly {
-            ca := mload(add(packed, 0x1))
-            notAfter := mload(add(packed, 0x9))
-            maxPathLen := mload(add(packed, 0x11))
-            subjectHash := mload(add(packed, 0x31))
+            ca := byte(0, mload(packed))
+            notAfter := shr(192, mload(add(packed, 0x01)))
+            maxPathLen := shr(192, mload(add(packed, 0x09)))
+            subjectHash := mload(add(packed, 0x11))
         }
         bytes memory pubKey = packed.slice(0x31, packed.length - 0x31);
         return VerifiedCert({
