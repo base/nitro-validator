@@ -21,11 +21,23 @@ contract Asn1DecodeHarness {
     }
 }
 
+contract CertManagerHarness is CertManager {
+    using Asn1Decode for bytes;
+
+    constructor() CertManager(new P384Verifier()) {}
+
+    function verifyBasicConstraints(bytes memory der, bool ca) external pure returns (int64) {
+        return _verifyBasicConstraintsExtension(der, der.root(), ca);
+    }
+}
+
 contract CertManagerTest is Test {
     Asn1DecodeHarness public harness;
+    CertManagerHarness public certManagerHarness;
 
     function setUp() public {
         harness = new Asn1DecodeHarness();
+        certManagerHarness = new CertManagerHarness();
     }
 
     // 's' INTEGER from cabundle[3] (2026-04-02 attestation): DER-encoded with a 0x00
@@ -39,6 +51,38 @@ contract CertManagerTest is Test {
         assertEq(uint8(lo >> 248), 0xa2, "lo[0]: expected 0xa2 (unfixed: 0x00, byte absorbed into hi)");
         assertEq(hi, uint128(0x00caf59019bfbcc6f6ed365e5a892cea));
         assertEq(lo, 0xa2eda9c549dc01460f5fe650814ebe0e7ee855d3bcffde95afd2e82e21df0eac);
+    }
+
+    function test_BasicConstraintsEmptySequenceIsClientCert() public view {
+        assertEq(int256(certManagerHarness.verifyBasicConstraints(hex"3000", false)), -1);
+    }
+
+    function test_BasicConstraintsEmptySequenceRejectsCACert() public {
+        vm.expectRevert("isCA must be true for CA certs");
+        certManagerHarness.verifyBasicConstraints(hex"3000", true);
+    }
+
+    function test_BasicConstraintsAcceptsCAWithoutPathLen() public view {
+        assertEq(int256(certManagerHarness.verifyBasicConstraints(hex"30030101ff", true)), -1);
+    }
+
+    function test_BasicConstraintsAcceptsCAWithPathLen() public view {
+        assertEq(int256(certManagerHarness.verifyBasicConstraints(hex"30060101ff020100", true)), 0);
+    }
+
+    function test_BasicConstraintsRejectsOutOfBoundsChild() public {
+        vm.expectRevert("basicConstraints out of bounds");
+        certManagerHarness.verifyBasicConstraints(hex"3003020200", false);
+    }
+
+    function test_BasicConstraintsRejectsTrailingFields() public {
+        vm.expectRevert("trailing basicConstraints fields");
+        certManagerHarness.verifyBasicConstraints(hex"30090101ff020100020100", true);
+    }
+
+    function test_BasicConstraintsRejectsUnknownField() public {
+        vm.expectRevert("invalid basicConstraints field");
+        certManagerHarness.verifyBasicConstraints(hex"30020400", false);
     }
 
     // Cert chain from the 2026-04-02 ~15:35 UTC dev attestation that produced the live revert.
