@@ -478,6 +478,29 @@ contract HintedNitroAttestationTest is Test {
         certManager.verifyCACertWithHints(abi.encodePacked(caCert, bytes1(0x00)), parentHash, "");
     }
 
+    function test_HintedTrailingRootBytesCannotPoisonParentCache() public {
+        bytes memory attestation = _repairMissingPublicKeyBytes(_decodeBase64(_realAttestationB64()));
+        (bytes memory attestationTbs,) = validator.decodeAttestationTbs(attestation);
+        NitroValidator.Ptrs memory ptrs = parser.parseAttestation(attestationTbs);
+
+        bytes memory rootCert = attestationTbs.slice(ptrs.cabundle[0]);
+        bytes memory caCert = attestationTbs.slice(ptrs.cabundle[1]);
+        bytes32 rootHash = keccak256(rootCert);
+        assertEq(rootHash, certManager.ROOT_CA_CERT_HASH(), "expected pinned AWS Nitro root");
+
+        bytes memory shadowRoot = abi.encodePacked(rootCert, bytes1(0x00));
+        bytes32 shadowRootHash = keccak256(shadowRoot);
+        bytes memory shadowRootHints =
+            hintCollector.collectCertSignatureHints(shadowRoot, certManager.loadVerified(rootHash).pubKey);
+
+        vm.expectRevert("invalid cert length");
+        certManager.verifyCACertWithHints(shadowRoot, rootHash, shadowRootHints);
+        assertEq(certManager.loadVerified(shadowRootHash).pubKey.length, 0, "shadow root must not cache");
+
+        vm.expectRevert("parent cert unverified");
+        certManager.verifyCACertWithHints(caCert, shadowRootHash, "");
+    }
+
     function test_HintedCACertRejectsTrailingFieldInsideCertificateSequence() public {
         bytes memory attestation = _repairMissingPublicKeyBytes(_decodeBase64(_realAttestationB64()));
         (bytes memory attestationTbs,) = validator.decodeAttestationTbs(attestation);
