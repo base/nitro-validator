@@ -32,6 +32,24 @@ contract CertManagerHarness is CertManager {
     }
 }
 
+contract CertManagerPubKeyHarness is CertManager {
+    using Asn1Decode for bytes;
+
+    constructor() CertManager(new P384Verifier()) {}
+
+    function parsePubKey(bytes memory subjectPublicKeyInfo) external pure returns (bytes memory) {
+        return _parsePubKey(subjectPublicKeyInfo, subjectPublicKeyInfo.root());
+    }
+
+    function parsePubKeyAt(bytes memory certificate, uint256 header, uint256 content, uint256 length)
+        external
+        pure
+        returns (bytes memory)
+    {
+        return _parsePubKey(certificate, LibAsn1Ptr.toAsn1Ptr(header, content, length));
+    }
+}
+
 contract CertManagerTest is Test {
     using Asn1Decode for bytes;
     using LibAsn1Ptr for Asn1Ptr;
@@ -39,10 +57,12 @@ contract CertManagerTest is Test {
 
     Asn1DecodeHarness public harness;
     CertManagerHarness public certManagerHarness;
+    CertManagerPubKeyHarness public certManagerPubKeyHarness;
 
     function setUp() public {
         harness = new Asn1DecodeHarness();
         certManagerHarness = new CertManagerHarness();
+        certManagerPubKeyHarness = new CertManagerPubKeyHarness();
     }
 
     // 's' INTEGER from cabundle[3] (2026-04-02 attestation): DER-encoded with a 0x00
@@ -63,7 +83,7 @@ contract CertManagerTest is Test {
     }
 
     function test_BasicConstraintsEmptySequenceRejectsCACert() public {
-        vm.expectRevert("isCA must be true for CA certs");
+        vm.expectRevert(CertManager.InvalidBasicConstraints.selector);
         certManagerHarness.verifyBasicConstraints(hex"3000", true);
     }
 
@@ -76,23 +96,63 @@ contract CertManagerTest is Test {
     }
 
     function test_BasicConstraintsRejectsEmptyPathLen() public {
-        vm.expectRevert("invalid pathLenConstraint");
+        vm.expectRevert(CertManager.InvalidBasicConstraints.selector);
         certManagerHarness.verifyBasicConstraints(hex"30050101ff0200", true);
     }
 
     function test_BasicConstraintsRejectsOutOfBoundsChild() public {
-        vm.expectRevert("basicConstraints out of bounds");
+        vm.expectRevert(CertManager.InvalidBasicConstraints.selector);
         certManagerHarness.verifyBasicConstraints(hex"3003020200", false);
     }
 
     function test_BasicConstraintsRejectsTrailingFields() public {
-        vm.expectRevert("trailing basicConstraints fields");
+        vm.expectRevert(CertManager.InvalidBasicConstraints.selector);
         certManagerHarness.verifyBasicConstraints(hex"30090101ff020100020100", true);
     }
 
     function test_BasicConstraintsRejectsUnknownField() public {
-        vm.expectRevert("invalid basicConstraints field");
+        vm.expectRevert(CertManager.InvalidBasicConstraints.selector);
         certManagerHarness.verifyBasicConstraints(hex"30020400", false);
+    }
+
+    function test_ParsePubKeyAcceptsUncompressedP384Point() public view {
+        bytes memory pubKey = _patternBytes(96);
+        bytes memory spki = abi.encodePacked(hex"3076301006072a8648ce3d020106052b8104002203620004", pubKey);
+
+        assertEq(certManagerPubKeyHarness.parsePubKey(spki), pubKey);
+    }
+
+    function test_ParsePubKeyRejectsCompressedP384Point() public {
+        bytes memory compressedKey = _patternBytes(48);
+        bytes memory spki = abi.encodePacked(hex"3046301006072a8648ce3d020106052b8104002203320002", compressedKey);
+        bytes memory paddedCertificate = abi.encodePacked(new bytes(128), spki);
+
+        vm.expectRevert(CertManager.InvalidSubjectPublicKey.selector);
+        certManagerPubKeyHarness.parsePubKeyAt(paddedCertificate, 128, 130, 0x46);
+    }
+
+    function test_ParsePubKeyRejectsOversizedP384Point() public {
+        bytes memory oversizedKey = _patternBytes(97);
+        bytes memory spki = abi.encodePacked(hex"3077301006072a8648ce3d020106052b8104002203630004", oversizedKey);
+
+        vm.expectRevert(CertManager.InvalidSubjectPublicKey.selector);
+        certManagerPubKeyHarness.parsePubKey(spki);
+    }
+
+    function test_ParsePubKeyRejectsTruncatedP384Point() public {
+        bytes memory truncatedKey = _patternBytes(95);
+        bytes memory spki = abi.encodePacked(hex"3076301006072a8648ce3d020106052b8104002203620004", truncatedKey);
+
+        vm.expectRevert(CertManager.InvalidSubjectPublicKey.selector);
+        certManagerPubKeyHarness.parsePubKey(spki);
+    }
+
+    function test_ParsePubKeyRejectsMissingUncompressedPrefix() public {
+        bytes memory pubKey = _patternBytes(96);
+        bytes memory spki = abi.encodePacked(hex"3076301006072a8648ce3d020106052b8104002203620002", pubKey);
+
+        vm.expectRevert(CertManager.InvalidSubjectPublicKey.selector);
+        certManagerPubKeyHarness.parsePubKey(spki);
     }
 
     // Cert chain from the 2026-04-02 ~15:35 UTC dev attestation that produced the live revert.
@@ -344,6 +404,13 @@ contract CertManagerTest is Test {
         }
 
         return der;
+    }
+
+    function _patternBytes(uint256 len) internal pure returns (bytes memory out) {
+        out = new bytes(len);
+        for (uint256 i = 0; i < len; i++) {
+            out[i] = bytes1(uint8(i + 1));
+        }
     }
 }
 
