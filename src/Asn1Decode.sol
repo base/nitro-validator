@@ -118,12 +118,33 @@ library Asn1Decode {
      * @dev Extract value of bitstring node from DER-encoded structure
      * @param der The DER-encoded ASN1 structure
      * @param ptr Points to the indices of the current node
-     * @return A bitstring encoded in a uint256
+     * @return A bitstring encoded in a uint256 with the first payload octet in the least
+     *         significant byte, so X.509 bit masks are stable across multi-octet encodings.
      */
     function bitstringUintAt(bytes memory der, Asn1Ptr ptr) internal pure returns (uint256) {
         require(der[ptr.header()] == 0x03, "Not type BIT STRING");
+        require(ptr.length() > 0, "invalid BIT STRING length");
+
+        uint256 unusedBits = uint8(der[ptr.content()]);
+        require(unusedBits <= 7, "invalid BIT STRING padding");
+
         uint256 len = ptr.length() - 1;
-        return uint256(readBytesN(der, ptr.content() + 1, len) >> ((32 - len) * 8));
+        require(len <= 32, "BIT STRING too long");
+        if (len == 0) {
+            require(unusedBits == 0, "invalid BIT STRING padding");
+            return 0;
+        }
+
+        if (unusedBits != 0) {
+            uint8 unusedMask = uint8((uint256(1) << unusedBits) - 1);
+            require(uint8(der[ptr.content() + len]) & unusedMask == 0, "Non-zero unused BIT STRING bits");
+        }
+
+        uint256 value;
+        for (uint256 i = 0; i < len; ++i) {
+            value |= uint256(uint8(der[ptr.content() + 1 + i])) << (i * 8);
+        }
+        return value;
     }
 
     /*
