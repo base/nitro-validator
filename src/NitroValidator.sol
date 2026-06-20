@@ -27,6 +27,16 @@ contract NitroValidator {
     bytes32 public constant NONCE_KEY = 0x7ab1577440dd7bedf920cb6de2f9fc6bf7ba98c78c85a3fa1f8311aac95e1759; // keccak256(bytes("nonce"))
     bytes32 public constant PCRS_KEY = 0x61585f8bc67a4b6d5891a4639a074964ac66fc2241dc0b36c157dc101325367a; // keccak256(bytes("pcrs"))
 
+    uint256 private constant MODULE_ID_SEEN = 1 << 0;
+    uint256 private constant DIGEST_SEEN = 1 << 1;
+    uint256 private constant CERTIFICATE_SEEN = 1 << 2;
+    uint256 private constant PUBLIC_KEY_SEEN = 1 << 3;
+    uint256 private constant USER_DATA_SEEN = 1 << 4;
+    uint256 private constant NONCE_SEEN = 1 << 5;
+    uint256 private constant TIMESTAMP_SEEN = 1 << 6;
+    uint256 private constant CABUNDLE_SEEN = 1 << 7;
+    uint256 private constant PCRS_SEEN = 1 << 8;
+
     struct Ptrs {
         CborElement moduleID;
         uint64 timestamp;
@@ -195,16 +205,20 @@ contract NitroValidator {
     ///        accept decision.
     ///      - The outer payload map and the nested `pcrs` map / `cabundle` array are each accepted in
     ///        both definite-length and indefinite-length CBOR form.
+    ///      - Recognised top-level keys are single-assignment and the payload must be fully consumed,
+    ///        so duplicate security-critical fields or signed-but-unparsed trailing bytes revert.
     function _parseAttestation(bytes memory attestationTbs) internal pure returns (Ptrs memory) {
         require(attestationTbs.keccak(0, 18) == ATTESTATION_TBS_PREFIX, "invalid attestation prefix");
 
         CborElement payload = attestationTbs.byteStringAt(18);
+        require(payload.end() == attestationTbs.length, "trailing tbs data");
         uint256 mapHeaderIx = payload.start();
         CborElement current = attestationTbs.mapAt(mapHeaderIx);
         bool outerIndefinite = _isIndefinite(attestationTbs, mapHeaderIx);
         uint256 entryCount = current.value(); // entry count for a definite-length map
 
         Ptrs memory ptrs;
+        uint256 seenKeys;
         uint256 end = payload.end();
         for (uint256 entry = 0;; entry++) {
             if (outerIndefinite) {
@@ -227,29 +241,38 @@ contract NitroValidator {
             current = attestationTbs.nextTextString(current);
             bytes32 keyHash = attestationTbs.keccak(current);
             if (keyHash == MODULE_ID_KEY) {
+                seenKeys = _markAttestationKeySeen(seenKeys, MODULE_ID_SEEN);
                 current = attestationTbs.nextTextString(current);
                 ptrs.moduleID = current;
             } else if (keyHash == DIGEST_KEY) {
+                seenKeys = _markAttestationKeySeen(seenKeys, DIGEST_SEEN);
                 current = attestationTbs.nextTextString(current);
                 ptrs.digest = current;
             } else if (keyHash == CERTIFICATE_KEY) {
+                seenKeys = _markAttestationKeySeen(seenKeys, CERTIFICATE_SEEN);
                 current = attestationTbs.nextByteString(current);
                 ptrs.cert = current;
             } else if (keyHash == PUBLIC_KEY_KEY) {
+                seenKeys = _markAttestationKeySeen(seenKeys, PUBLIC_KEY_SEEN);
                 current = attestationTbs.nextByteStringOrNull(current);
                 ptrs.publicKey = current;
             } else if (keyHash == USER_DATA_KEY) {
+                seenKeys = _markAttestationKeySeen(seenKeys, USER_DATA_SEEN);
                 current = attestationTbs.nextByteStringOrNull(current);
                 ptrs.userData = current;
             } else if (keyHash == NONCE_KEY) {
+                seenKeys = _markAttestationKeySeen(seenKeys, NONCE_SEEN);
                 current = attestationTbs.nextByteStringOrNull(current);
                 ptrs.nonce = current;
             } else if (keyHash == TIMESTAMP_KEY) {
+                seenKeys = _markAttestationKeySeen(seenKeys, TIMESTAMP_SEEN);
                 current = attestationTbs.nextPositiveInt(current);
                 ptrs.timestamp = uint64(current.value());
             } else if (keyHash == CABUNDLE_KEY) {
+                seenKeys = _markAttestationKeySeen(seenKeys, CABUNDLE_SEEN);
                 (ptrs.cabundle, current) = _parseCabundle(attestationTbs, current);
             } else if (keyHash == PCRS_KEY) {
+                seenKeys = _markAttestationKeySeen(seenKeys, PCRS_SEEN);
                 (ptrs.pcrs, current) = _parsePcrs(attestationTbs, current);
             } else {
                 // Forward-compatibility: skip (rather than reject) keys this parser does not
@@ -264,6 +287,11 @@ contract NitroValidator {
         }
 
         return ptrs;
+    }
+
+    function _markAttestationKeySeen(uint256 seenKeys, uint256 keyFlag) private pure returns (uint256) {
+        require((seenKeys & keyFlag) == 0, "duplicate attestation key");
+        return seenKeys | keyFlag;
     }
 
     /// @dev Parses the `cabundle` array (definite- or indefinite-length) starting from the key

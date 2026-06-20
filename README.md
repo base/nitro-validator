@@ -174,10 +174,12 @@ integrator (see [docs](docs/hinted-p384-nitro-attestation.md#integrator-responsi
   issuer/serial entries).
 - **Forward compatibility** — the attestation parser tolerates AWS evolving the COSE payload format:
   unrecognised map keys are skipped (not rejected), and the payload map plus the nested `pcrs` map
-  and `cabundle` array are accepted in both definite- and indefinite-length CBOR encodings. This is
-  safe because the entire to-be-signed payload is checked against AWS's COSE signature, so unknown or
-  re-encoded content is signed and ignoring it can only ever drop a field the contract does not read
-  — it can never change the accept decision.
+  and `cabundle` array are accepted in both definite- and indefinite-length CBOR encodings. Recognised
+  top-level keys are single-assignment and the signed payload must be fully consumed, so duplicate
+  parsed fields or trailing signed-but-unparsed bytes revert. This is safe because the entire
+  to-be-signed payload is checked against AWS's COSE signature, so unknown or re-encoded content is
+  signed and ignoring it can only ever drop a field the contract does not read — it can never change
+  the accept decision.
 
 ## Build
 
