@@ -113,7 +113,7 @@ contract CertManagerTest is Test {
     }
 
     function test_BasicConstraintsRejectsOutOfBoundsChild() public {
-        vm.expectRevert(CertManager.InvalidBasicConstraints.selector);
+        vm.expectRevert(Asn1Decode.InvalidAsn1Length.selector);
         certManagerHarness.verifyBasicConstraints(hex"3003020200", false);
     }
 
@@ -155,7 +155,7 @@ contract CertManagerTest is Test {
         bytes memory truncatedKey = _patternBytes(95);
         bytes memory spki = abi.encodePacked(hex"3076301006072a8648ce3d020106052b8104002203620004", truncatedKey);
 
-        vm.expectRevert(CertManager.InvalidSubjectPublicKey.selector);
+        vm.expectRevert(Asn1Decode.InvalidAsn1Length.selector);
         certManagerPubKeyHarness.parsePubKey(spki);
     }
 

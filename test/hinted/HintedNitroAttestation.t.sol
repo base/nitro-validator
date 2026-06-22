@@ -483,6 +483,19 @@ contract HintedNitroAttestationTest is Test {
         certManager.verifyCACertWithHints(abi.encodePacked(caCert, bytes1(0x00)), parentHash, "");
     }
 
+    function test_HintedCACertRejectsNonCanonicalOuterLength() public {
+        bytes memory attestation = _repairMissingPublicKeyBytes(_decodeBase64(_realAttestationB64()));
+        (bytes memory attestationTbs,) = validator.decodeAttestationTbs(attestation);
+        NitroValidator.Ptrs memory ptrs = parser.parseAttestation(attestationTbs);
+        (bytes memory caCert, bytes32 parentHash,) = _firstNonRootCA(attestationTbs, ptrs);
+        bytes memory nonCanonicalCert = _nonCanonicalOuterSequenceLength(caCert);
+        bytes32 nonCanonicalHash = keccak256(nonCanonicalCert);
+
+        vm.expectRevert(Asn1Decode.InvalidAsn1Length.selector);
+        certManager.verifyCACertWithHints(nonCanonicalCert, parentHash, "");
+        assertEq(certManager.loadVerified(nonCanonicalHash).pubKey.length, 0, "non-canonical cert must not cache");
+    }
+
     function test_HintedTrailingRootBytesCannotPoisonParentCache() public {
         bytes memory attestation = _repairMissingPublicKeyBytes(_decodeBase64(_realAttestationB64()));
         (bytes memory attestationTbs,) = validator.decodeAttestationTbs(attestation);
@@ -1264,6 +1277,21 @@ contract HintedNitroAttestationTest is Test {
         output = abi.encodePacked(der, value);
         output[2] = bytes1(uint8(length >> 8));
         output[3] = bytes1(uint8(length));
+    }
+
+    function _nonCanonicalOuterSequenceLength(bytes memory der) internal pure returns (bytes memory output) {
+        require(der.length >= 4 && der[0] == 0x30 && der[1] == 0x82, "test: expected long sequence");
+
+        output = new bytes(der.length + 1);
+        output[0] = der[0];
+        output[1] = 0x83;
+        output[2] = 0x00;
+        output[3] = der[2];
+        output[4] = der[3];
+
+        for (uint256 i = 4; i < der.length; ++i) {
+            output[i + 1] = der[i];
+        }
     }
 
     function _repairMissingPublicKeyBytes(bytes memory attestation) internal pure returns (bytes memory repaired) {
