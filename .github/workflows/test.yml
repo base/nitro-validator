@@ -64,6 +64,7 @@ jobs:
         run: |
           node --check tools/nitro_attestation_input.js
           node --check tools/hinted_attestation_calls.js
+          node --test tools/p384_hints.test.js
           node tools/nitro_attestation_input.js fixture > /dev/null
           node tools/hinted_attestation_calls.js fixture > /dev/null
         id: tools
