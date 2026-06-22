@@ -81,7 +81,7 @@ contract CertManagerTest is Test {
     }
 
     function test_BasicConstraintsRejectsOutOfBoundsChild() public {
-        vm.expectRevert("basicConstraints out of bounds");
+        vm.expectRevert(Asn1Decode.InvalidAsn1Length.selector);
         certManagerHarness.verifyBasicConstraints(hex"3003020200", false);
     }
 
