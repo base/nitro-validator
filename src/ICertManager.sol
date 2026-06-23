@@ -45,9 +45,9 @@ interface ICertManager {
 
     // --- DEPRECATED: these always revert; use the *WithHints variants above. ---
 
-    /// @dev DEPRECATED — always reverts ("use hinted cert verification").
+    /// @dev DEPRECATED — always reverts.
     function verifyCACert(bytes memory cert, bytes32 parentCertHash) external returns (bytes32);
 
-    /// @dev DEPRECATED — always reverts ("use hinted cert verification").
+    /// @dev DEPRECATED — always reverts.
     function verifyClientCert(bytes memory cert, bytes32 parentCertHash) external returns (VerifiedCert memory);
 }

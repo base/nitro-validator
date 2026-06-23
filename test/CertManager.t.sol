@@ -386,12 +386,61 @@ contract RequireCachedChainNotRevokedTest is Test {
         // verifiedParent[PARENT] is unset (bytes32(0)), so the chain is broken: it can never
         // reach ROOT_CA_CERT_HASH. The fixed function must fail closed instead of returning.
         cm.setParent(CHILD, PARENT);
-        vm.expectRevert("incomplete cert chain");
+        vm.expectRevert(CertManager.IncompleteCertChain.selector);
         cm.requireCachedChainNotRevoked(CHILD);
     }
 
     function test_RevertsOnZeroCertHash() public {
-        vm.expectRevert("incomplete cert chain");
+        vm.expectRevert(CertManager.IncompleteCertChain.selector);
         cm.requireCachedChainNotRevoked(bytes32(0));
+    }
+}
+
+/// @dev Regression coverage for BLOCKSEC-5249 finding I-02: `CertRevoked` / `CertUnrevoked` now
+///      include the acting `msg.sender` as an indexed topic so revocation activity is monitorable.
+contract CertRevocationEventTest is Test {
+    CertManager internal cm;
+
+    event CertRevoked(bytes32 indexed certHash, address indexed account);
+    event CertUnrevoked(bytes32 indexed certHash, address indexed account);
+
+    bytes32 internal constant CERT_ID = bytes32(uint256(0xabc));
+
+    function setUp() public {
+        // Deployer is both owner and revoker, so this contract can revoke/unrevoke directly.
+        cm = new CertManager(new P384Verifier());
+    }
+
+    function test_RevokeCertEmitsSender() public {
+        vm.expectEmit(true, true, false, true, address(cm));
+        emit CertRevoked(CERT_ID, address(this));
+        cm.revokeCert(CERT_ID);
+    }
+
+    function test_RevokeCertsEmitsSender() public {
+        bytes32[] memory ids = new bytes32[](1);
+        ids[0] = CERT_ID;
+        vm.expectEmit(true, true, false, true, address(cm));
+        emit CertRevoked(CERT_ID, address(this));
+        cm.revokeCerts(ids);
+    }
+
+    function test_UnrevokeCertEmitsSender() public {
+        cm.revokeCert(CERT_ID);
+        vm.expectEmit(true, true, false, true, address(cm));
+        emit CertUnrevoked(CERT_ID, address(this));
+        cm.unrevokeCert(CERT_ID);
+    }
+
+    /// @dev The recorded account is the actual caller, not the contract: a delegated revoker
+    ///      address shows up in the event topic.
+    function test_RevokeCertRecordsActualCaller() public {
+        address delegatedRevoker = address(0xBEEF);
+        cm.setRevoker(delegatedRevoker);
+
+        vm.expectEmit(true, true, false, true, address(cm));
+        emit CertRevoked(CERT_ID, delegatedRevoker);
+        vm.prank(delegatedRevoker);
+        cm.revokeCert(CERT_ID);
     }
 }

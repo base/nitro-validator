@@ -390,10 +390,10 @@ contract HintedNitroAttestationTest is Test {
 
         address newRevoker = address(0xBEEF);
         vm.prank(address(0xCAFE));
-        vm.expectRevert("not owner");
+        vm.expectRevert(CertManager.NotOwner.selector);
         certManager.setRevoker(newRevoker);
 
-        vm.expectRevert("invalid revoker");
+        vm.expectRevert(CertManager.InvalidRevoker.selector);
         certManager.setRevoker(address(0));
 
         certManager.setRevoker(newRevoker);
@@ -401,7 +401,7 @@ contract HintedNitroAttestationTest is Test {
 
         bytes32 otherCertHash = keccak256("other cert");
         vm.prank(address(0xCAFE));
-        vm.expectRevert("not revoker");
+        vm.expectRevert(CertManager.NotRevoker.selector);
         certManager.revokeCert(otherCertHash);
 
         vm.prank(newRevoker);
@@ -409,24 +409,24 @@ contract HintedNitroAttestationTest is Test {
         assertTrue(certManager.revoked(otherCertHash));
 
         vm.prank(newRevoker);
-        vm.expectRevert("not owner");
+        vm.expectRevert(CertManager.NotOwner.selector);
         certManager.unrevokeCert(otherCertHash);
 
         certManager.unrevokeCert(otherCertHash);
         assertFalse(certManager.revoked(otherCertHash));
 
-        vm.expectRevert("invalid owner");
+        vm.expectRevert(CertManager.InvalidOwner.selector);
         certManager.transferOwnership(address(0));
 
         address newOwner = address(0xA11CE);
         vm.prank(address(0xCAFE));
-        vm.expectRevert("not owner");
+        vm.expectRevert(CertManager.NotOwner.selector);
         certManager.transferOwnership(newOwner);
 
         certManager.transferOwnership(newOwner);
         assertEq(certManager.owner(), newOwner);
 
-        vm.expectRevert("not owner");
+        vm.expectRevert(CertManager.NotOwner.selector);
         certManager.setRevoker(address(0x1234));
 
         vm.prank(newOwner);
@@ -455,7 +455,7 @@ contract HintedNitroAttestationTest is Test {
         bytes32 rootHash = certManager.ROOT_CA_CERT_HASH();
 
         vm.prank(newRevoker);
-        vm.expectRevert("not owner");
+        vm.expectRevert(CertManager.NotOwner.selector);
         certManager.revokeCert(rootHash);
         assertFalse(certManager.revoked(rootHash));
 
@@ -464,7 +464,7 @@ contract HintedNitroAttestationTest is Test {
         certHashes[1] = rootHash;
 
         vm.prank(newRevoker);
-        vm.expectRevert("not owner");
+        vm.expectRevert(CertManager.NotOwner.selector);
         certManager.revokeCerts(certHashes);
         assertFalse(certManager.revoked(certHashes[0]));
         assertFalse(certManager.revoked(rootHash));
@@ -725,10 +725,10 @@ contract HintedNitroAttestationTest is Test {
     }
 
     function test_DeployableCertManagerDisablesUnhintedEntrypoints() public {
-        vm.expectRevert("use hinted cert verification");
+        vm.expectRevert(CertManager.DeprecatedEntrypoint.selector);
         certManager.verifyCACert("", bytes32(0));
 
-        vm.expectRevert("use hinted cert verification");
+        vm.expectRevert(CertManager.DeprecatedEntrypoint.selector);
         certManager.verifyClientCert("", bytes32(0));
 
         vm.expectRevert("use hinted attestation verification");
