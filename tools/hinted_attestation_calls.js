@@ -7,6 +7,7 @@ const {
   parseAttestationPayload,
   parseAttestationSignature,
   parseCertPublicKey,
+  parseCertTbs,
   readBytes,
 } = require("./p384_hints");
 const {
@@ -98,7 +99,7 @@ function prepareHintedAttestationCalls(attestation, addresses = {}) {
   for (let i = 1; i < payload.cabundle.length; ++i) {
     const cert = payload.cabundle[i];
     const hints = collectCertSignatureHintBytes(cert, parentPubKey);
-    const certHash = keccak256Hex(cert);
+    const certHash = certCacheKeyHex(cert);
     cold.push(certTx({
       tx: cold.length + 1,
       label: caLabel(i),
@@ -116,7 +117,7 @@ function prepareHintedAttestationCalls(attestation, addresses = {}) {
   }
 
   const leafHints = collectCertSignatureHintBytes(payload.certificate, parentPubKey);
-  const leafHash = keccak256Hex(payload.certificate);
+  const leafHash = certCacheKeyHex(payload.certificate);
   cold.push(certTx({
     tx: cold.length + 1,
     label: "client / leaf cert",
@@ -282,6 +283,10 @@ function decodeFixedHex(value, length) {
 
 function keccak256Hex(bytes) {
   return hex(keccak256(bytes));
+}
+
+function certCacheKeyHex(cert) {
+  return keccak256Hex(parseCertTbs(cert));
 }
 
 function keccak256(bytes) {

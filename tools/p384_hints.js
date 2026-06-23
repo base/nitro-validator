@@ -444,6 +444,18 @@ function parseCertSignature(cert) {
   return { hash, signature: Buffer.concat([r, s]) };
 }
 
+function parseCertTbs(cert) {
+  const root = readAsn1(cert, 0);
+  requireTag(root, 0x30, "certificate");
+  if (root.end !== cert.length) {
+    throw new Error("certificate has trailing bytes");
+  }
+
+  const tbs = readAsn1(cert, root.contentStart);
+  requireTag(tbs, 0x30, "TBS certificate");
+  return cert.subarray(tbs.start, tbs.end);
+}
+
 function parseCertPublicKey(cert) {
   const root = readAsn1(cert, 0);
   requireTag(root, 0x30, "certificate");
@@ -757,5 +769,6 @@ module.exports = {
   parseAttestationSignature,
   parseCertPublicKey,
   parseCertSignature,
+  parseCertTbs,
   readBytes,
 };
