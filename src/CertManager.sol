@@ -480,6 +480,7 @@ contract CertManager is ICertManager {
             require(ca == isCA, "isCA must be true for CA certs");
 
             if (certificate[basicConstraintsPtr.header()] == 0x02) {
+                require(basicConstraintsPtr.length() > 0, "invalid pathLenConstraint");
                 maxPathLen = int64(uint64(certificate.uintAt(basicConstraintsPtr)));
             } else {
                 revert("invalid basicConstraints field");

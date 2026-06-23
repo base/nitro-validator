@@ -70,6 +70,11 @@ contract CertManagerTest is Test {
         assertEq(int256(certManagerHarness.verifyBasicConstraints(hex"30060101ff020100", true)), 0);
     }
 
+    function test_BasicConstraintsRejectsEmptyPathLen() public {
+        vm.expectRevert("invalid pathLenConstraint");
+        certManagerHarness.verifyBasicConstraints(hex"30050101ff0200", true);
+    }
+
     function test_BasicConstraintsRejectsOutOfBoundsChild() public {
         vm.expectRevert("basicConstraints out of bounds");
         certManagerHarness.verifyBasicConstraints(hex"3003020200", false);
