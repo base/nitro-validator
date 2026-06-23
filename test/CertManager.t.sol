@@ -156,3 +156,52 @@ contract CertManagerTest is Test {
         return der;
     }
 }
+
+/// @dev Exposes the internal revocation-chain walk and lets tests seed the `verifiedParent`
+///      cache directly so the broken-chain (fail-closed) behaviour can be exercised in isolation.
+contract RevocationChainHarness is CertManager {
+    constructor() CertManager(new P384Verifier()) {}
+
+    function setParent(bytes32 child, bytes32 parent) external {
+        verifiedParent[child] = parent;
+    }
+
+    function requireCachedChainNotRevoked(bytes32 certHash) external view {
+        _requireCachedChainNotRevoked(certHash);
+    }
+}
+
+/// @dev Regression coverage for BLOCKSEC-5249 finding L-01: `_requireCachedChainNotRevoked`
+///      previously fell through and returned silently when a cached chain terminated at
+///      bytes32(0) without reaching the pinned root, i.e. it failed open on a broken chain.
+contract RequireCachedChainNotRevokedTest is Test {
+    RevocationChainHarness internal cm;
+
+    bytes32 internal constant CHILD = bytes32(uint256(1));
+    bytes32 internal constant PARENT = bytes32(uint256(2));
+
+    function setUp() public {
+        cm = new RevocationChainHarness();
+    }
+
+    function test_PassesWhenChainReachesPinnedRoot() public {
+        bytes32 root = cm.ROOT_CA_CERT_HASH();
+        cm.setParent(CHILD, PARENT);
+        cm.setParent(PARENT, root);
+        // Walks CHILD -> PARENT -> ROOT and returns without reverting.
+        cm.requireCachedChainNotRevoked(CHILD);
+    }
+
+    function test_RevertsWhenChainDoesNotReachRoot() public {
+        // verifiedParent[PARENT] is unset (bytes32(0)), so the chain is broken: it can never
+        // reach ROOT_CA_CERT_HASH. The fixed function must fail closed instead of returning.
+        cm.setParent(CHILD, PARENT);
+        vm.expectRevert("incomplete cert chain");
+        cm.requireCachedChainNotRevoked(CHILD);
+    }
+
+    function test_RevertsOnZeroCertHash() public {
+        vm.expectRevert("incomplete cert chain");
+        cm.requireCachedChainNotRevoked(bytes32(0));
+    }
+}

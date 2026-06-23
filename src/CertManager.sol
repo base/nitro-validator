@@ -229,6 +229,10 @@ contract CertManager is ICertManager {
             }
             certHash = verifiedParent[certHash];
         }
+        // Fail closed: a chain that terminates at bytes32(0) without reaching the pinned root is
+        // broken and must not be treated as a verified, non-revoked chain. Reverting here instead
+        // of returning silently means revocation safety never depends on upstream guards.
+        revert("incomplete cert chain");
     }
 
     function _verifyCert(
