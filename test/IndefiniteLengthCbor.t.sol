@@ -945,4 +945,77 @@ contract NitroValidatorIndefiniteLengthTest is Test {
         assertEq(p.cabundle.length, 0, "cabundle empty");
         assertEq(p.digest.length(), SYNTH_DIGEST_LEN, "digest after empty cabundle parsed");
     }
+
+    // ── Composite definite/indefinite encodings (BLOCKSEC-5249 I-03) ──
+    //
+    // The audit noted there were no tests mixing definite- and indefinite-length encodings across
+    // the outer payload map and the nested `pcrs` map / `cabundle` array. These exercise that matrix:
+    // the same logical attestation is encoded with every combination of outer-map / pcrs-map /
+    // cabundle-array length forms, and must parse to identical field pointers each time.
+
+    /// @dev Builds the standard 9-entry synthetic attestation body, independently selecting the
+    ///      length form of the nested `pcrs` map and `cabundle` array while keeping their logical
+    ///      content identical to `_entries()` (1 PCR of 48B, 1 cabundle cert of 4B).
+    function _compositeEntries(bool indefinitePcrs, bool indefiniteCabundle) internal pure returns (bytes memory) {
+        bytes memory head = abi.encodePacked(
+            hex"696d6f64756c655f6964", // module_id
+            hex"6474657374",
+            hex"66646967657374", //       digest
+            hex"66534841333834",
+            hex"6974696d657374616d70", // timestamp
+            hex"1a000f4240"
+        );
+        bytes memory pcrs = indefinitePcrs
+            ? abi.encodePacked(hex"6470637273", CBOR_MAP_INDEFINITE, hex"005830", new bytes(SYNTH_PCR_LEN), CBOR_BREAK)
+            : abi.encodePacked(hex"6470637273", hex"a1005830", new bytes(SYNTH_PCR_LEN));
+        bytes memory cert = abi.encodePacked(hex"6b6365727469666963617465", hex"4400000000");
+        bytes memory cabundle = indefiniteCabundle
+            ? abi.encodePacked(hex"68636162756e646c65", CBOR_ARRAY_INDEFINITE, hex"4400000000", CBOR_BREAK)
+            : abi.encodePacked(hex"68636162756e646c65", hex"814400000000");
+        bytes memory tail = abi.encodePacked(
+            hex"6a7075626c69635f6b6579", // public_key
+            hex"f6",
+            hex"69757365725f64617461", //   user_data
+            hex"f6",
+            hex"656e6f6e6365", //           nonce
+            hex"f6"
+        );
+        return abi.encodePacked(head, pcrs, cert, cabundle, tail);
+    }
+
+    function _compositeTbs(bool indefiniteOuter, bool indefinitePcrs, bool indefiniteCabundle)
+        internal
+        pure
+        returns (bytes memory)
+    {
+        bytes memory entries = _compositeEntries(indefinitePcrs, indefiniteCabundle);
+        if (indefiniteOuter) {
+            return _buildTbs(abi.encodePacked(CBOR_MAP_INDEFINITE, entries, CBOR_BREAK));
+        }
+        return _buildTbs(abi.encodePacked(hex"a9", entries)); // 0xA9 = definite 9-entry map
+    }
+
+    function test_composite_definiteOuter_indefinitePcrs_definiteCabundle() public view {
+        _assertSyntheticFields(validator.parseAttestation(_compositeTbs(false, true, false)));
+    }
+
+    function test_composite_definiteOuter_definitePcrs_indefiniteCabundle() public view {
+        _assertSyntheticFields(validator.parseAttestation(_compositeTbs(false, false, true)));
+    }
+
+    function test_composite_definiteOuter_indefinitePcrs_indefiniteCabundle() public view {
+        _assertSyntheticFields(validator.parseAttestation(_compositeTbs(false, true, true)));
+    }
+
+    function test_composite_indefiniteOuter_indefinitePcrs_definiteCabundle() public view {
+        _assertSyntheticFields(validator.parseAttestation(_compositeTbs(true, true, false)));
+    }
+
+    function test_composite_indefiniteOuter_definitePcrs_indefiniteCabundle() public view {
+        _assertSyntheticFields(validator.parseAttestation(_compositeTbs(true, false, true)));
+    }
+
+    function test_composite_indefiniteOuter_indefinitePcrs_indefiniteCabundle() public view {
+        _assertSyntheticFields(validator.parseAttestation(_compositeTbs(true, true, true)));
+    }
 }
