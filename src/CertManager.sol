@@ -21,10 +21,16 @@ contract CertManager is ICertManager {
     error InvalidBasicConstraints();
     error InvalidSubjectPublicKey();
     error UnsupportedCriticalExtension();
+    error NotOwner();
+    error NotRevoker();
+    error IncompleteCertChain();
+    error DeprecatedEntrypoint();
+    error InvalidOwner();
+    error InvalidRevoker();
 
     event CertVerified(bytes32 indexed certHash);
-    event CertRevoked(bytes32 indexed certHash);
-    event CertUnrevoked(bytes32 indexed certHash);
+    event CertRevoked(bytes32 indexed certHash, address indexed account);
+    event CertUnrevoked(bytes32 indexed certHash, address indexed account);
     event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
     event RevokerUpdated(address indexed previousRevoker, address indexed newRevoker);
 
@@ -83,11 +89,11 @@ contract CertManager is ICertManager {
     }
 
     function _onlyOwner() internal view {
-        require(msg.sender == owner, "not owner");
+        if (msg.sender != owner) revert NotOwner();
     }
 
     function _onlyRevoker() internal view {
-        require(msg.sender == revoker, "not revoker");
+        if (msg.sender != revoker) revert NotRevoker();
     }
 
     constructor(IP384Verifier p384Verifier_) {
@@ -112,12 +118,12 @@ contract CertManager is ICertManager {
     /// @notice DEPRECATED — always reverts. The fully on-chain (non-hinted) path is too expensive
     ///         post-Fusaka and has been removed. Use {verifyCACertWithHints}.
     function verifyCACert(bytes memory, bytes32) external pure returns (bytes32) {
-        revert("use hinted cert verification");
+        revert DeprecatedEntrypoint();
     }
 
     /// @notice DEPRECATED — always reverts. Use {verifyClientCertWithHints}.
     function verifyClientCert(bytes memory, bytes32) external pure returns (VerifiedCert memory) {
-        revert("use hinted cert verification");
+        revert DeprecatedEntrypoint();
     }
 
     /// @notice Verify a CA certificate against its (already-cached) parent and cache the result.
@@ -173,13 +179,13 @@ contract CertManager is ICertManager {
     }
 
     function transferOwnership(address newOwner) external onlyOwner {
-        require(newOwner != address(0), "invalid owner");
+        if (newOwner == address(0)) revert InvalidOwner();
         emit OwnershipTransferred(owner, newOwner);
         owner = newOwner;
     }
 
     function setRevoker(address newRevoker) external onlyOwner {
-        require(newRevoker != address(0), "invalid revoker");
+        if (newRevoker == address(0)) revert InvalidRevoker();
         emit RevokerUpdated(revoker, newRevoker);
         revoker = newRevoker;
     }
@@ -200,12 +206,12 @@ contract CertManager is ICertManager {
 
     function unrevokeCert(bytes32 certId) external onlyOwner {
         revoked[certId] = false;
-        emit CertUnrevoked(certId);
+        emit CertUnrevoked(certId, msg.sender);
     }
 
     function _revokeCert(bytes32 certId) internal {
         revoked[certId] = true;
-        emit CertRevoked(certId);
+        emit CertRevoked(certId, msg.sender);
     }
 
     function _requireCanRevoke(bytes32 certId) internal view {
@@ -240,7 +246,7 @@ contract CertManager is ICertManager {
         // Fail closed: a chain that terminates at bytes32(0) without reaching the pinned root is
         // broken and must not be treated as a verified, non-revoked chain. Reverting here instead
         // of returning silently means revocation safety never depends on upstream guards.
-        revert("incomplete cert chain");
+        revert IncompleteCertChain();
     }
 
     function _verifyCert(
