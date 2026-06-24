@@ -37,6 +37,9 @@ contract NitroValidator {
     uint256 private constant CABUNDLE_SEEN = 1 << 7;
     uint256 private constant PCRS_SEEN = 1 << 8;
 
+    uint256 public constant MAX_PCRS = 32;
+    uint256 public constant MAX_CABUNDLE_CERTS = 32;
+
     struct Ptrs {
         CborElement moduleID;
         uint64 timestamp;
@@ -123,7 +126,7 @@ contract NitroValidator {
         require(ptrs.timestamp > 0, "no timestamp");
         require(ptrs.cabundle.length > 0, "no cabundle");
         require(attestationTbs.keccak(ptrs.digest) == ATTESTATION_DIGEST, "invalid digest");
-        require(1 <= ptrs.pcrs.length && ptrs.pcrs.length <= 32, "invalid pcrs");
+        require(1 <= ptrs.pcrs.length && ptrs.pcrs.length <= MAX_PCRS, "invalid pcrs");
         require(
             ptrs.publicKey.isNull() || (1 <= ptrs.publicKey.length() && ptrs.publicKey.length() <= 1024),
             "invalid pub key"
@@ -204,7 +207,8 @@ contract NitroValidator {
     ///        AWS's COSE signature, so unknown content is signed and ignoring it cannot change the
     ///        accept decision.
     ///      - The outer payload map and the nested `pcrs` map / `cabundle` array are each accepted in
-    ///        both definite-length and indefinite-length CBOR form.
+    ///        both definite-length and indefinite-length CBOR form. Parser-time count caps are applied
+    ///        before allocation, so malformed pre-auth payloads cannot force unbounded memory growth.
     ///      - Recognised top-level keys are single-assignment and the payload must be fully consumed,
     ///        so duplicate security-critical fields or signed-but-unparsed trailing bytes revert.
     function _parseAttestation(bytes memory attestationTbs) internal pure returns (Ptrs memory) {
@@ -306,6 +310,7 @@ contract NitroValidator {
         current = tbs.nextArray(keyPtr);
         bool indefinite = _isIndefinite(tbs, headerIx);
         uint256 count = indefinite ? _countIndefiniteItems(tbs, current.end()) : current.value();
+        require(count <= MAX_CABUNDLE_CERTS, "too many cabundle certs");
         cabundle = new CborElement[](count);
         for (uint256 i = 0; i < count; i++) {
             current = tbs.nextByteString(current);
@@ -336,6 +341,7 @@ contract NitroValidator {
         } else {
             count = current.value();
         }
+        require(count <= MAX_PCRS, "too many pcrs");
         pcrs = new CborElement[](count);
         for (uint256 i = 0; i < count; i++) {
             current = tbs.nextPositiveInt(current);

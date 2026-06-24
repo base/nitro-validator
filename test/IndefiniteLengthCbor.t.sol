@@ -862,6 +862,36 @@ contract NitroValidatorIndefiniteLengthTest is Test {
         validator.parseAttestation(tbs);
     }
 
+    /// @dev Malicious definite-length cabundle count must be bounded before allocating the pointer
+    ///      array. This is the 34-byte payload shape from the gas-grief finding.
+    function test_neg_largeCabundleCount_revertsBeforeAllocation() public {
+        bytes memory tbs = _buildTbs(
+            abi.encodePacked(
+                hex"a1", // one top-level map entry
+                hex"68636162756e646c65", // key "cabundle"
+                hex"9a000fffff" // array(1,048,575)
+            )
+        );
+        assertEq(tbs.length, 34, "expected minimal large-cabundle payload");
+
+        vm.expectRevert("too many cabundle certs");
+        validator.parseAttestation(tbs);
+    }
+
+    /// @dev Malicious definite-length pcrs count must be bounded before allocating the pointer array.
+    function test_neg_largePcrsCount_revertsBeforeAllocation() public {
+        bytes memory tbs = _buildTbs(
+            abi.encodePacked(
+                hex"a1", // one top-level map entry
+                hex"6470637273", // key "pcrs"
+                hex"ba000fffff" // map(1,048,575)
+            )
+        );
+
+        vm.expectRevert("too many pcrs");
+        validator.parseAttestation(tbs);
+    }
+
     /// @dev Indefinite-length map without a trailing 0xFF break marker.
     ///      Parser reads past valid entries into trailing garbage, reverting
     ///      when it encounters a non-text-string byte as the next key.
