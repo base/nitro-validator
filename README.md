@@ -53,6 +53,10 @@ own document signature.
      `ROOT_CA_CERT_HASH` / `keccak256(rootCert)` for the first non-root CA; `0` is only for the
      pinned root itself)
    - `certManager.verifyClientCertWithHints(leafCert, parentCertHash, hints)`
+   Use each CA verification's returned hash as the `parentCertHash` for the next child. For non-root
+   certs this cache key is `keccak256(tbsCertificate)`, not `keccak256(certBytes)`, so malleable
+   signature encodings share one cache entry. Leaf verification returns metadata, not a child
+   `parentCertHash`.
 2. **Validation — verify the document signature.** Once the chain is cached:
    - `validator.validateAttestationWithHints(attestationTbs, signature, attestationHints)`
    - **Precondition:** the whole `cabundle` + leaf must already be cached from phase 1. This call
@@ -93,8 +97,8 @@ contains a revoked certificate.
   `ROOT_CA_CERT_HASH` as an emergency global halt (the root is identified by its pinned hash, since
   it is never parsed on-chain).
 - The revoker can call `revokeCert` or `revokeCerts` for non-root certificate identity keys.
-- `loadVerified` is a raw cache read; returned metadata does not imply the certificate is
-  currently trusted.
+- `loadVerified` is a raw cache read by verification cache key; returned metadata does not imply
+  the certificate is currently trusted.
 
 ### Example consumer
 
@@ -164,7 +168,8 @@ integrator (see [docs](docs/hinted-p384-nitro-attestation.md#integrator-responsi
   to `block.timestamp` (seconds) or match the `nonce` to a challenge. Enforce freshness yourself if
   you need it.
 - **Signature malleability** — low-S is not enforced (AWS does not emit low-S), so the malleable
-  twin `(r, n-s)` also verifies. Never use the signature as a uniqueness key; dedupe on canonical
+  twin `(r, n-s)` also verifies. Certificate caching excludes the outer signature bytes, but
+  integrators must still never use attestation signatures as uniqueness keys; dedupe on canonical
   attestation fields instead.
 - **Enclave policy** — checking `pcrs` / `moduleID` against the enclave image(s) you trust is your
   responsibility.

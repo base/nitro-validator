@@ -48,7 +48,8 @@ contract CertManager is ICertManager {
     bytes32 public constant BASIC_CONSTRAINTS_OID = 0x6351d72a43cb42fb9a2531a28608c278c89629f8f025b5f5dc705f3fe45e950a; // keccak256(hex"551d13")
     bytes32 public constant KEY_USAGE_OID = 0x45529d8772b07ebd6d507a1680da791f4a2192882bf89d518801579f7a5167d2; // keccak256(hex"551d0f")
 
-    // certHash -> VerifiedCert
+    // certHash -> VerifiedCert. The root is keyed by ROOT_CA_CERT_HASH; every non-root cert is keyed
+    // by keccak256(tbsCertificate), excluding the outer malleable ECDSA signature bytes.
     mapping(bytes32 => bytes) public verified;
     // certHash -> parent cert hash used during cold verification.
     // A cached cert is pinned to the parent it was FIRST verified under: warm reuse requires the
@@ -120,12 +121,13 @@ contract CertManager is ICertManager {
     ///      match the parent used during cold verification. On a cold cert, `signatureHints` must
     ///      contain the real off-chain inverse hints for the cert signature; they are re-verified
     ///      on-chain, so a wrong hint only reverts. Pass 0 only when submitting the pinned root;
-    ///      otherwise pass the cached parent cert hash.
+    ///      otherwise pass the cached parent cert hash. The returned hash is ROOT_CA_CERT_HASH for
+    ///      the pinned root and keccak256(tbsCertificate) for every non-root cert.
     function verifyCACertWithHints(bytes memory cert, bytes32 parentCertHash, bytes memory signatureHints)
         external
         returns (bytes32)
     {
-        bytes32 certHash = keccak256(cert);
+        bytes32 certHash = _certCacheKey(cert);
         _verifyCert(cert, certHash, true, parentCertHash, signatureHints);
         return certHash;
     }
@@ -138,12 +140,13 @@ contract CertManager is ICertManager {
         external
         returns (VerifiedCert memory)
     {
-        return _verifyCert(cert, keccak256(cert), false, parentCertHash, signatureHints);
+        return _verifyCert(cert, _certCacheKey(cert), false, parentCertHash, signatureHints);
     }
 
     /// @notice Return raw cached certificate metadata without current trust checks.
     /// @dev A non-empty return value only means the cert was cached previously. It may now be
-    ///      expired or revoked; use the verification entrypoints for trust-aware reuse.
+    ///      expired or revoked; use the verification entrypoints for trust-aware reuse. Pass the
+    ///      cache key returned by the verification entrypoints.
     function loadVerified(bytes32 certHash) external view returns (VerifiedCert memory) {
         return _loadVerified(certHash);
     }
@@ -262,6 +265,9 @@ contract CertManager is ICertManager {
 
         bytes32 identity;
         (cert, identity) = _verifyUncachedCert(certificate, ca, parent, signatureHints);
+        // The pinned root is already present under ROOT_CA_CERT_HASH. Do not allow a signature
+        // malleability twin of that same trust anchor to become a second cached parent key.
+        require(!_isPinnedRootAlias(certHash, cert), "root cert alias");
         // Reject by (issuer, serial) identity so a re-encoded twin of a revoked cert cannot pass.
         _requireNotRevoked(identity);
         _saveVerified(certHash, cert);
@@ -271,6 +277,24 @@ contract CertManager is ICertManager {
         emit CertVerified(certHash);
 
         return cert;
+    }
+
+    function _certCacheKey(bytes memory certificate) internal pure returns (bytes32) {
+        bytes32 rawCertHash = keccak256(certificate);
+        if (rawCertHash == ROOT_CA_CERT_HASH) {
+            return ROOT_CA_CERT_HASH;
+        }
+
+        Asn1Ptr root = certificate.root();
+        require(root.totalLength() == certificate.length, "invalid cert length");
+        Asn1Ptr tbsCertPtr = certificate.firstChildOf(root);
+        return certificate.keccak(tbsCertPtr.header(), tbsCertPtr.totalLength());
+    }
+
+    function _isPinnedRootAlias(bytes32 certHash, VerifiedCert memory cert) internal pure returns (bool) {
+        return certHash != ROOT_CA_CERT_HASH && cert.ca && cert.subjectHash == ROOT_CA_CERT_SUBJECT_HASH
+            && cert.pubKey.length == ROOT_CA_CERT_PUB_KEY.length
+            && keccak256(cert.pubKey) == keccak256(ROOT_CA_CERT_PUB_KEY);
     }
 
     function _verifyUncachedCert(

@@ -6,7 +6,9 @@ import {NitroValidator} from "../../src/NitroValidator.sol";
 import {CertManager} from "../../src/CertManager.sol";
 import {CertManagerDemo} from "../helpers/CertManagerDemo.sol";
 import {ICertManager} from "../../src/ICertManager.sol";
+import {Asn1Decode, LibAsn1Ptr, Asn1Ptr} from "../../src/Asn1Decode.sol";
 import {CborDecode} from "../../src/CborDecode.sol";
+import {LibBytes} from "../../src/LibBytes.sol";
 import {P384Verifier} from "../../src/P384Verifier.sol";
 import {Sha2Ext} from "../../src/Sha2Ext.sol";
 import {P384HintCollector} from "../helpers/HintedNitroTestHelpers.sol";
@@ -73,7 +75,10 @@ contract NitroValidatorParseHarness is NitroValidator {
 }
 
 contract HintedNitroAttestationTest is Test {
+    using Asn1Decode for bytes;
     using CborDecode for bytes;
+    using LibAsn1Ptr for Asn1Ptr;
+    using LibBytes for bytes;
 
     uint256 constant HINTED_MODEXP_FLOOR_DELTA = 300; // EIP-7883 floor 500 - EIP-2565 floor 200
     uint256 constant TX_CAP = 16_777_216;
@@ -1059,7 +1064,7 @@ contract HintedNitroAttestationTest is Test {
         summary.leaf = certManager.verifyClientCertWithHints(clientCert, parentHash, clientHints);
         uint256 clientCurrentGas = g0 - gasleft();
 
-        bytes32 leafHash = keccak256(clientCert);
+        bytes32 leafHash = _certCacheKey(clientCert);
         ICertManager.VerifiedCert memory cachedLeaf = certManager.loadVerified(leafHash);
         assertTrue(cachedLeaf.pubKey.length > 0, "client cert must be cached");
         assertFalse(cachedLeaf.ca, "client cert must be cached as client");
@@ -1121,6 +1126,12 @@ contract HintedNitroAttestationTest is Test {
 
     function _max(uint256 a, uint256 b) internal pure returns (uint256) {
         return a >= b ? a : b;
+    }
+
+    function _certCacheKey(bytes memory certificate) internal pure returns (bytes32) {
+        Asn1Ptr root = certificate.root();
+        Asn1Ptr tbsCertPtr = certificate.firstChildOf(root);
+        return certificate.keccak(tbsCertPtr.header(), tbsCertPtr.totalLength());
     }
 
     function _cacheCertBundleWithHints(bytes memory attestationTbs)

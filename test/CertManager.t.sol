@@ -5,6 +5,7 @@ import {Test, console} from "forge-std/Test.sol";
 import {CertManager} from "../src/CertManager.sol";
 import {ICertManager} from "../src/ICertManager.sol";
 import {Asn1Decode, LibAsn1Ptr, Asn1Ptr} from "../src/Asn1Decode.sol";
+import {LibBytes} from "../src/LibBytes.sol";
 import {P384Verifier} from "../src/P384Verifier.sol";
 import {P384HintCollector} from "./helpers/HintedNitroTestHelpers.sol";
 
@@ -22,6 +23,10 @@ contract Asn1DecodeHarness {
 }
 
 contract CertManagerTest is Test {
+    using Asn1Decode for bytes;
+    using LibAsn1Ptr for Asn1Ptr;
+    using LibBytes for bytes;
+
     Asn1DecodeHarness public harness;
 
     function setUp() public {
@@ -71,6 +76,47 @@ contract CertManagerTest is Test {
         _verifyCA(cm, collector, CB3, parentHash); // reverts with "invalid sig" on unpatched code
     }
 
+    function test_VerifyCACertWithHints_MalleableSignatureUsesSameTbsCacheKey() public {
+        vm.warp(1775145600);
+        CertManager cm = new CertManager(new P384Verifier());
+        P384HintCollector collector = new P384HintCollector();
+
+        bytes32 rootHash = keccak256(CB0);
+        assertEq(rootHash, cm.ROOT_CA_CERT_HASH(), "CB0 must be the pinned root");
+
+        bytes memory twin = _malleateCertSignature(CB1);
+        assertNotEq(keccak256(twin), keccak256(CB1), "malleated cert must have different raw bytes");
+        assertEq(_tbsHash(twin), _tbsHash(CB1), "malleated cert must keep the signed TBS");
+
+        bytes memory parentPubKey = cm.loadVerified(rootHash).pubKey;
+        bytes memory twinHints = collector.collectCertSignatureHints(twin, parentPubKey);
+
+        bytes32 twinKey = cm.verifyCACertWithHints(twin, rootHash, twinHints);
+        assertEq(twinKey, _tbsHash(CB1), "non-root certs are cached by TBS hash");
+        assertNotEq(twinKey, keccak256(CB1), "cache key must exclude the malleable signature");
+
+        bytes32 canonicalKey = cm.verifyCACertWithHints(CB1, rootHash, "");
+        assertEq(canonicalKey, twinKey, "canonical cert should hit the same warm cache entry");
+    }
+
+    function test_VerifyCACertWithHints_RejectsMalleableRootAlias() public {
+        vm.warp(1775145600);
+        CertManager cm = new CertManager(new P384Verifier());
+        P384HintCollector collector = new P384HintCollector();
+
+        bytes32 rootHash = keccak256(CB0);
+        assertEq(rootHash, cm.ROOT_CA_CERT_HASH(), "CB0 must be the pinned root");
+
+        bytes memory rootTwin = _malleateCertSignature(CB0);
+        assertNotEq(keccak256(rootTwin), rootHash, "malleated root must have a different raw hash");
+
+        bytes memory rootPubKey = cm.loadVerified(rootHash).pubKey;
+        bytes memory hints = collector.collectCertSignatureHints(rootTwin, rootPubKey);
+
+        vm.expectRevert("root cert alias");
+        cm.verifyCACertWithHints(rootTwin, rootHash, hints);
+    }
+
     function _verifyCA(CertManager cm, P384HintCollector collector, bytes memory cert, bytes32 parentHash)
         internal
         returns (bytes32)
@@ -82,8 +128,8 @@ contract CertManagerTest is Test {
 
     // Cache-griefing liveness edge: `verifiedParent[certHash]` is written once on the cold
     // path (gated on cert.pubKey.length == 0) and never updated. If AWS renews an intermediate
-    // CA with the SAME signing key but a new validity window, the renewed cert has different
-    // DER bytes -> a different keccak256 -> a different parentCertHash in the chain. A leaf
+    // CA with the SAME signing key but a new validity window, the renewed cert has a different
+    // TBS -> a different cache key -> a different parentCertHash in the chain. A leaf
     // already cached under the old parent then permanently reverts "parent cert mismatch"
     // against the renewed parent, with no admin override. (The wrong-parent revert mechanism
     // itself is covered by HintedNitroAttestationTest.test_Hinted{CA,Client}CertRejectsCachedParentMismatch.)
@@ -97,6 +143,101 @@ contract CertManagerTest is Test {
             true,
             "needs a same-key-renewed AWS CA fixture (off-chain signing); documents verifiedParent first-writer-wins"
         );
+    }
+
+    function _tbsHash(bytes memory certificate) internal pure returns (bytes32) {
+        Asn1Ptr root = certificate.root();
+        Asn1Ptr tbsCertPtr = certificate.firstChildOf(root);
+        return certificate.keccak(tbsCertPtr.header(), tbsCertPtr.totalLength());
+    }
+
+    function _malleateCertSignature(bytes memory certificate) internal pure returns (bytes memory result) {
+        (Asn1Ptr root, Asn1Ptr sigPtr, Asn1Ptr sigRoot, Asn1Ptr sigSPtr) = _certSignaturePtrs(certificate);
+        bytes memory twinS = _malleatedS(certificate, sigSPtr);
+
+        int256 delta = int256(twinS.length) - int256(sigSPtr.totalLength());
+        result = _replaceNode(certificate, sigSPtr, twinS, delta);
+
+        _writeDerLength(result, root, _addDelta(root.length(), delta));
+        _writeDerLength(result, sigPtr, _addDelta(sigPtr.length(), delta));
+        _writeDerLength(result, sigRoot, _addDelta(sigRoot.length(), delta));
+    }
+
+    function _certSignaturePtrs(bytes memory certificate)
+        internal
+        pure
+        returns (Asn1Ptr root, Asn1Ptr sigPtr, Asn1Ptr sigRoot, Asn1Ptr sigSPtr)
+    {
+        root = certificate.root();
+        Asn1Ptr tbsCertPtr = certificate.firstChildOf(root);
+        Asn1Ptr sigAlgoPtr = certificate.nextSiblingOf(tbsCertPtr);
+        sigPtr = certificate.nextSiblingOf(sigAlgoPtr);
+        Asn1Ptr sigBPtr = certificate.bitstring(sigPtr);
+        sigRoot = certificate.rootOf(sigBPtr);
+        Asn1Ptr sigRPtr = certificate.firstChildOf(sigRoot);
+        sigSPtr = certificate.nextSiblingOf(sigRPtr);
+    }
+
+    function _malleatedS(bytes memory certificate, Asn1Ptr sigSPtr) internal pure returns (bytes memory) {
+        (uint128 shi, uint256 slo) = certificate.uint384At(sigSPtr);
+        (uint128 twinHi, uint256 twinLo) = _p384OrderMinus(shi, slo);
+        return _derEncodeP384Integer(abi.encodePacked(twinHi, twinLo));
+    }
+
+    function _replaceNode(bytes memory certificate, Asn1Ptr ptr, bytes memory replacement, int256 delta)
+        internal
+        pure
+        returns (bytes memory result)
+    {
+        result = new bytes(_addDelta(certificate.length, delta));
+
+        uint256 prefixLen = ptr.header();
+        for (uint256 i = 0; i < prefixLen; ++i) {
+            result[i] = certificate[i];
+        }
+        for (uint256 i = 0; i < replacement.length; ++i) {
+            result[prefixLen + i] = replacement[i];
+        }
+
+        uint256 suffixStart = ptr.header() + ptr.totalLength();
+        uint256 suffixLen = certificate.length - suffixStart;
+        uint256 resultSuffixStart = prefixLen + replacement.length;
+        for (uint256 i = 0; i < suffixLen; ++i) {
+            result[resultSuffixStart + i] = certificate[suffixStart + i];
+        }
+    }
+
+    function _p384OrderMinus(uint128 hi, uint256 lo) internal pure returns (uint128 twinHi, uint256 twinLo) {
+        uint128 nHi = type(uint128).max;
+        uint256 nLo = 0xffffffffffffffffc7634d81f4372ddf581a0db248b0a77aecec196accc52973;
+        uint128 borrow = lo > nLo ? 1 : 0;
+        unchecked {
+            twinHi = nHi - hi - borrow;
+            twinLo = nLo - lo;
+        }
+    }
+
+    function _addDelta(uint256 value, int256 delta) internal pure returns (uint256) {
+        return delta < 0 ? value - uint256(-delta) : value + uint256(delta);
+    }
+
+    function _writeDerLength(bytes memory der, Asn1Ptr ptr, uint256 length) internal pure {
+        uint256 headerLen = ptr.content() - ptr.header();
+        if (headerLen == 2) {
+            require(length < 128, "short length overflow");
+            der[ptr.header() + 1] = bytes1(uint8(length));
+        } else if (headerLen == 3) {
+            require(der[ptr.header() + 1] == 0x81, "expected 0x81 length");
+            require(length < 256, "0x81 length overflow");
+            der[ptr.header() + 2] = bytes1(uint8(length));
+        } else if (headerLen == 4) {
+            require(der[ptr.header() + 1] == 0x82, "expected 0x82 length");
+            require(length < 65536, "0x82 length overflow");
+            der[ptr.header() + 2] = bytes1(uint8(length >> 8));
+            der[ptr.header() + 3] = bytes1(uint8(length));
+        } else {
+            revert("unsupported length header");
+        }
     }
 
     function testFuzz_uint384At_LeadingZeros(uint8 numZeros, uint128 hiSeed, uint256 loSeed) public view {
