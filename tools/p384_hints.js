@@ -12,6 +12,7 @@ const B = hexToBigInt("b3312fa7e23ee7e4988e056be3f82d19181d9c6efe8141120314088f5
 const GX = hexToBigInt("aa87ca22be8b05378eb1c71ef320ad746e1d3b628ba79b9859f741e082542a385502f25dbf55296c3a545e3872760ab7");
 const GY = hexToBigInt("3617de4a96262c6f5d9e98bf9292dc29f8f41dbd289a147ce9da3113b5f0b8c00a60b1ce1d7e819d7a431d7c90ea0e5f");
 const MASK_256 = (1n << 256n) - 1n;
+const MAX_CBOR_NESTING_DEPTH = 128;
 
 if (require.main === module) {
   main();
@@ -624,7 +625,11 @@ function parseAttestationPayload(attestation) {
   return result;
 }
 
-function readCborItem(bytes, start) {
+function readCborItem(bytes, start, depth = 0) {
+  if (depth > MAX_CBOR_NESTING_DEPTH) {
+    throw new Error("CBOR nesting depth exceeded");
+  }
+
   const initial = bytes[start];
   if (initial === undefined) {
     throw new Error("CBOR read out of bounds");
@@ -647,12 +652,12 @@ function readCborItem(bytes, start) {
         if (end >= bytes.length) {
           throw new Error("indefinite CBOR array missing break");
         }
-        end = readCborItem(bytes, end).end;
+        end = readCborItem(bytes, end, depth + 1).end;
       }
       end++;
     } else {
       for (let i = 0n; i < value; ++i) {
-        end = readCborItem(bytes, end).end;
+        end = readCborItem(bytes, end, depth + 1).end;
       }
     }
   } else if (major === 5) {
@@ -662,14 +667,14 @@ function readCborItem(bytes, start) {
         if (end >= bytes.length) {
           throw new Error("indefinite CBOR map missing break");
         }
-        const key = readCborItem(bytes, end);
-        const mapValue = readCborItem(bytes, key.end);
+        const key = readCborItem(bytes, end, depth + 1);
+        const mapValue = readCborItem(bytes, key.end, depth + 1);
         end = mapValue.end;
       }
       end++;
     } else {
       for (let i = 0n; i < value * 2n; ++i) {
-        end = readCborItem(bytes, end).end;
+        end = readCborItem(bytes, end, depth + 1).end;
       }
     }
   } else if (major === 0 || major === 1 || major === 6 || major === 7) {
@@ -762,6 +767,7 @@ function hexToBigInt(hex) {
 }
 
 module.exports = {
+  MAX_CBOR_NESTING_DEPTH,
   collectAttestationHintBytes,
   collectCertSignatureHintBytes,
   collectVerifyHintBytes,
