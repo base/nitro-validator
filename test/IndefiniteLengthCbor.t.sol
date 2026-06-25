@@ -315,6 +315,32 @@ contract CborDecodeIndefiniteLengthTest is Test {
         vm.expectRevert("odd cbor map item count");
         harness.skipValue(hex"bf01ff", 0);
     }
+
+    // ── Recursion depth bound (BLOCKSEC-5249 I-01) ────────────
+
+    /// @dev Builds `n` nested single-element definite arrays (`0x81` ...) wrapping a `0x00` leaf.
+    ///      The leaf is skipped at recursion depth `n`.
+    function _nestedArrays(uint256 n) internal pure returns (bytes memory out) {
+        out = new bytes(n + 1);
+        for (uint256 i = 0; i < n; i++) {
+            out[i] = 0x81; // array of length 1
+        }
+        out[n] = 0x00; // unsigned int 0 leaf
+    }
+
+    /// @dev Nesting whose deepest descent equals MAX_CBOR_DEPTH (64) is still accepted.
+    function test_skipValue_nestingAtLimit_succeeds() public view {
+        bytes memory deep = _nestedArrays(64);
+        assertEq(harness.skipValue(deep, 0), 65, "should consume all 65 bytes");
+    }
+
+    /// @dev One level past the limit reverts with a clear reason instead of failing on an opaque
+    ///      condition (stack exhaustion / out-of-gas) as the unbounded recursion previously could.
+    function test_skipValue_nestingOverLimit_reverts() public {
+        bytes memory tooDeep = _nestedArrays(65);
+        vm.expectRevert("cbor nesting too deep");
+        harness.skipValue(tooDeep, 0);
+    }
 }
 
 // ──────────────────────────────────────────────────────────────

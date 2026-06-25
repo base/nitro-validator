@@ -52,6 +52,13 @@ library CborDecode {
     using LibBytes for bytes;
     using LibCborElement for CborElement;
 
+    // Maximum CBOR container nesting `skipValue` will descend through before reverting. `skipValue`
+    // is recursive, so without a bound a maliciously (or accidentally) deep array/map nesting could
+    // drive recursion until execution fails on an opaque condition (stack exhaustion / out-of-gas).
+    // AWS Nitro attestation payloads nest only a few levels deep, so this generous cap never trips
+    // for real documents while keeping the recursion bounded and giving a clear revert reason.
+    uint256 internal constant MAX_CBOR_DEPTH = 64;
+
     // Calculate the keccak256 hash of the given cbor element
     function keccak(bytes memory cbor, CborElement ptr) internal pure returns (bytes32) {
         return cbor.keccak(ptr.start(), ptr.length());
@@ -101,6 +108,11 @@ library CborDecode {
     // known ahead of time — e.g. the value of an unrecognised attestation key. Out-of-bounds
     // reads (including a truncated indefinite-length container with no break marker) revert.
     function skipValue(bytes memory cbor, uint256 ix) internal pure returns (uint256) {
+        return _skipValue(cbor, ix, 0);
+    }
+
+    function _skipValue(bytes memory cbor, uint256 ix, uint256 depth) private pure returns (uint256) {
+        require(depth <= MAX_CBOR_DEPTH, "cbor nesting too deep");
         uint8 b = uint8(cbor[ix]);
         uint8 major = b >> 5;
         uint8 ai = b & 0x1f;
@@ -145,7 +157,7 @@ library CborDecode {
                 while (uint8(cbor[p]) != 0xff) {
                     uint8 chunk = uint8(cbor[p]);
                     require(chunk >> 5 == major && (chunk & 0x1f) != 31, "invalid indefinite string chunk");
-                    p = skipValue(cbor, p);
+                    p = _skipValue(cbor, p, depth + 1);
                 }
                 return p + 1;
             }
@@ -155,12 +167,12 @@ library CborDecode {
             // array
             if (indefinite) {
                 while (uint8(cbor[p]) != 0xff) {
-                    p = skipValue(cbor, p);
+                    p = _skipValue(cbor, p, depth + 1);
                 }
                 return p + 1;
             }
             for (uint64 i = 0; i < arg; i++) {
-                p = skipValue(cbor, p);
+                p = _skipValue(cbor, p, depth + 1);
             }
             return p;
         } else if (major == 5) {
@@ -169,21 +181,21 @@ library CborDecode {
                 // a map must have an even number of items (key/value pairs); a dangling key before
                 // the break marker is malformed and must revert
                 while (uint8(cbor[p]) != 0xff) {
-                    p = skipValue(cbor, p); // key
+                    p = _skipValue(cbor, p, depth + 1); // key
                     require(uint8(cbor[p]) != 0xff, "odd cbor map item count");
-                    p = skipValue(cbor, p); // value
+                    p = _skipValue(cbor, p, depth + 1); // value
                 }
                 return p + 1;
             }
             for (uint64 i = 0; i < arg; i++) {
-                p = skipValue(cbor, p);
-                p = skipValue(cbor, p);
+                p = _skipValue(cbor, p, depth + 1);
+                p = _skipValue(cbor, p, depth + 1);
             }
             return p;
         } else if (major == 6) {
             // tag: a single tagged data item follows the header
             require(!indefinite, "invalid tag encoding");
-            return skipValue(cbor, p);
+            return _skipValue(cbor, p, depth + 1);
         } else {
             // major == 7: simple value / float; ai==31 (break) is not a standalone value
             require(!indefinite, "unexpected break");
