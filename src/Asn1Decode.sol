@@ -165,10 +165,8 @@ library Asn1Decode {
      * @return Uint value of node
      */
     function uintAt(bytes memory der, Asn1Ptr ptr) internal pure returns (uint256) {
-        require(der[ptr.header()] == 0x02, "Not type INTEGER");
-        require(der[ptr.content()] & 0x80 == 0, "Not positive");
-        uint256 len = ptr.length();
-        return uint256(readBytesN(der, ptr.content(), len) >> (32 - len) * 8);
+        (uint256 start, uint256 len) = positiveIntegerContent(der, ptr, 32);
+        return uint256(readBytesN(der, start, len) >> (32 - len) * 8);
     }
 
     /*
@@ -178,19 +176,40 @@ library Asn1Decode {
      * @return 384-bit uint encoded in uint128 and uint256
      */
     function uint384At(bytes memory der, Asn1Ptr ptr) internal pure returns (uint128, uint256) {
-        require(der[ptr.header()] == 0x02, "Not type INTEGER");
-        require(der[ptr.content()] & 0x80 == 0, "Not positive");
-        uint256 valueLength = ptr.length();
-        uint256 start = ptr.content();
-        if (der[start] == 0) {
-            start++;
-            valueLength--;
+        (uint256 start, uint256 valueLength) = positiveIntegerContent(der, ptr, 48);
+
+        if (valueLength > 32) {
+            uint256 hiLen = valueLength - 32;
+            return (
+                uint128(uint256(readBytesN(der, start, hiLen) >> (32 - hiLen) * 8)),
+                uint256(readBytesN(der, start + hiLen, 32))
+            );
         }
-        uint256 shift = 48 - valueLength;
-        return (
-            uint128(uint256(readBytesN(der, start, 16 - shift) >> (128 + shift * 8))),
-            uint256(readBytesN(der, start + 16 - shift, 32))
-        );
+
+        return (0, uint256(readBytesN(der, start, valueLength) >> (32 - valueLength) * 8));
+    }
+
+    function positiveIntegerContent(bytes memory der, Asn1Ptr ptr, uint256 maxValueLength)
+        private
+        pure
+        returns (uint256 start, uint256 valueLength)
+    {
+        require(der[ptr.header()] == 0x02, "Not type INTEGER");
+        valueLength = ptr.length();
+        require(valueLength > 0, "invalid INTEGER length");
+        start = ptr.content();
+
+        if (der[start] == 0) {
+            if (valueLength > 1) {
+                require(der[start + 1] & 0x80 == 0x80, "non-canonical INTEGER");
+                start++;
+                valueLength--;
+            }
+        } else {
+            require(der[start] & 0x80 == 0, "Not positive");
+        }
+
+        require(valueLength <= maxValueLength, "invalid INTEGER length");
     }
 
     /*
