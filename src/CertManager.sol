@@ -17,6 +17,10 @@ contract CertManager is ICertManager {
     using LibAsn1Ptr for Asn1Ptr;
     using LibBytes for bytes;
 
+    error InvalidExtension();
+    error InvalidBasicConstraints();
+    error UnsupportedCriticalExtension();
+
     event CertVerified(bytes32 indexed certHash);
     event CertRevoked(bytes32 indexed certHash);
     event CertUnrevoked(bytes32 indexed certHash);
@@ -433,7 +437,7 @@ contract CertManager is ICertManager {
         pure
         returns (int64 maxPathLen)
     {
-        require(certificate[extensionsPtr.header()] == 0xa3, "invalid extensions");
+        if (certificate[extensionsPtr.header()] != 0xa3) revert InvalidExtension();
         extensionsPtr = certificate.firstChildOf(extensionsPtr);
         Asn1Ptr extensionPtr = certificate.firstChildOf(extensionsPtr);
         uint256 end = extensionsPtr.content() + extensionsPtr.length();
@@ -444,16 +448,16 @@ contract CertManager is ICertManager {
         while (true) {
             Asn1Ptr oidPtr = certificate.firstChildOf(extensionPtr);
             bytes32 oid = certificate.keccak(oidPtr.content(), oidPtr.length());
+            Asn1Ptr valuePtr = certificate.nextSiblingOf(oidPtr);
+            bool recognized = oid == BASIC_CONSTRAINTS_OID || oid == KEY_USAGE_OID;
 
-            if (oid == BASIC_CONSTRAINTS_OID || oid == KEY_USAGE_OID) {
-                Asn1Ptr valuePtr = certificate.nextSiblingOf(oidPtr);
+            if (certificate[valuePtr.header()] == 0x01) {
+                if (valuePtr.length() != 1) revert InvalidExtension();
+                if (!recognized && certificate[valuePtr.content()] != 0x00) revert UnsupportedCriticalExtension();
+                valuePtr = certificate.nextSiblingOf(valuePtr);
+            }
 
-                if (certificate[valuePtr.header()] == 0x01) {
-                    // skip optional critical bool
-                    require(valuePtr.length() == 1, "invalid critical bool value");
-                    valuePtr = certificate.nextSiblingOf(valuePtr);
-                }
-
+            if (recognized) {
                 valuePtr = certificate.octetString(valuePtr);
 
                 if (oid == BASIC_CONSTRAINTS_OID) {
@@ -471,9 +475,7 @@ contract CertManager is ICertManager {
             extensionPtr = certificate.nextSiblingOf(extensionPtr);
         }
 
-        require(basicConstraintsFound, "basicConstraints not found");
-        require(keyUsageFound, "keyUsage not found");
-        require(ca || maxPathLen == -1, "maxPathLen must be undefined for client cert");
+        if (!basicConstraintsFound || !keyUsageFound || (!ca && maxPathLen != -1)) revert InvalidExtension();
     }
 
     function _verifyBasicConstraintsExtension(bytes memory certificate, Asn1Ptr valuePtr, bool ca)
@@ -481,7 +483,7 @@ contract CertManager is ICertManager {
         pure
         returns (int64 maxPathLen)
     {
-        require(certificate[valuePtr.header()] == 0x30, "invalid basicConstraints");
+        if (certificate[valuePtr.header()] != 0x30) revert InvalidBasicConstraints();
 
         maxPathLen = -1;
         bool isCA;
@@ -493,11 +495,11 @@ contract CertManager is ICertManager {
             cursor = _requireAsn1ChildWithin(basicConstraintsPtr, end);
 
             if (certificate[basicConstraintsPtr.header()] == 0x01) {
-                require(basicConstraintsPtr.length() == 1, "invalid isCA bool value");
+                if (basicConstraintsPtr.length() != 1) revert InvalidBasicConstraints();
                 isCA = certificate[basicConstraintsPtr.content()] == 0xff;
 
                 if (cursor == end) {
-                    require(ca == isCA, "isCA must be true for CA certs");
+                    if (ca != isCA) revert InvalidBasicConstraints();
                     return maxPathLen;
                 }
 
@@ -505,25 +507,25 @@ contract CertManager is ICertManager {
                 cursor = _requireAsn1ChildWithin(basicConstraintsPtr, end);
             }
 
-            require(ca == isCA, "isCA must be true for CA certs");
+            if (ca != isCA) revert InvalidBasicConstraints();
 
             if (certificate[basicConstraintsPtr.header()] == 0x02) {
-                require(basicConstraintsPtr.length() > 0, "invalid pathLenConstraint");
+                if (basicConstraintsPtr.length() == 0) revert InvalidBasicConstraints();
                 maxPathLen = int64(uint64(certificate.uintAt(basicConstraintsPtr)));
             } else {
-                revert("invalid basicConstraints field");
+                revert InvalidBasicConstraints();
             }
 
-            require(cursor == end, "trailing basicConstraints fields");
+            if (cursor != end) revert InvalidBasicConstraints();
             return maxPathLen;
         }
 
-        require(ca == isCA, "isCA must be true for CA certs");
+        if (ca != isCA) revert InvalidBasicConstraints();
     }
 
     function _requireAsn1ChildWithin(Asn1Ptr ptr, uint256 parentEnd) internal pure returns (uint256 childEnd) {
         childEnd = ptr.header() + ptr.totalLength();
-        require(childEnd <= parentEnd, "basicConstraints out of bounds");
+        if (childEnd > parentEnd) revert InvalidBasicConstraints();
     }
 
     function _verifyKeyUsageExtension(bytes memory certificate, Asn1Ptr valuePtr, bool ca) internal pure {
