@@ -349,40 +349,51 @@ contract CertManager is ICertManager {
         view
         returns (uint64 notAfter, int64 maxPathLen, bytes32 issuerHash, bytes32 subjectHash, bytes memory pubKey)
     {
+        Asn1Ptr sigAlgoPtr = _verifyTbsHeader(certificate, ptr);
+
+        (notAfter, maxPathLen, issuerHash, subjectHash, pubKey) =
+            _parseTbsInner(certificate, sigAlgoPtr, ca, ptr.content() + ptr.length());
+    }
+
+    function _verifyTbsHeader(bytes memory certificate, Asn1Ptr ptr) internal pure returns (Asn1Ptr sigAlgoPtr) {
         Asn1Ptr versionPtr = certificate.firstChildOf(ptr);
         Asn1Ptr vPtr = certificate.firstChildOf(versionPtr);
-        Asn1Ptr serialPtr = certificate.nextSiblingOf(versionPtr);
-        Asn1Ptr sigAlgoPtr = certificate.nextSiblingOf(serialPtr);
+        sigAlgoPtr = certificate.nextSiblingOf(certificate.nextSiblingOf(versionPtr));
 
         require(certificate.keccak(sigAlgoPtr.content(), sigAlgoPtr.length()) == CERT_ALGO_OID, "invalid cert sig algo");
         uint256 version = certificate.uintAt(vPtr);
         // as extensions are used in cert, version should be 3 (value 2) as per https://datatracker.ietf.org/doc/html/rfc5280#section-4.1.2.1
         require(version == 2, "version should be 3");
-
-        (notAfter, maxPathLen, issuerHash, subjectHash, pubKey) = _parseTbsInner(certificate, sigAlgoPtr, ca);
     }
 
-    function _parseTbsInner(bytes memory certificate, Asn1Ptr sigAlgoPtr, bool ca)
+    function _parseTbsInner(bytes memory certificate, Asn1Ptr sigAlgoPtr, bool ca, uint256 tbsEnd)
         internal
         view
         returns (uint64 notAfter, int64 maxPathLen, bytes32 issuerHash, bytes32 subjectHash, bytes memory pubKey)
     {
         Asn1Ptr issuerPtr = certificate.nextSiblingOf(sigAlgoPtr);
+        _requireAsn1NodeWithin(issuerPtr, tbsEnd);
         issuerHash = certificate.keccak(issuerPtr.content(), issuerPtr.length());
         Asn1Ptr validityPtr = certificate.nextSiblingOf(issuerPtr);
+        _requireAsn1NodeWithin(validityPtr, tbsEnd);
         Asn1Ptr subjectPtr = certificate.nextSiblingOf(validityPtr);
+        _requireAsn1NodeWithin(subjectPtr, tbsEnd);
         subjectHash = certificate.keccak(subjectPtr.content(), subjectPtr.length());
         Asn1Ptr subjectPublicKeyInfoPtr = certificate.nextSiblingOf(subjectPtr);
+        _requireAsn1NodeWithin(subjectPublicKeyInfoPtr, tbsEnd);
         Asn1Ptr extensionsPtr = certificate.nextSiblingOf(subjectPublicKeyInfoPtr);
 
         if (certificate[extensionsPtr.header()] == 0x81) {
             // skip optional issuerUniqueID
+            _requireAsn1NodeWithin(extensionsPtr, tbsEnd);
             extensionsPtr = certificate.nextSiblingOf(extensionsPtr);
         }
         if (certificate[extensionsPtr.header()] == 0x82) {
             // skip optional subjectUniqueID
+            _requireAsn1NodeWithin(extensionsPtr, tbsEnd);
             extensionsPtr = certificate.nextSiblingOf(extensionsPtr);
         }
+        require(_requireAsn1NodeWithin(extensionsPtr, tbsEnd) == tbsEnd, "trailing tbs fields");
 
         notAfter = _verifyValidity(certificate, validityPtr);
         maxPathLen = _verifyExtensions(certificate, extensionsPtr, ca);
@@ -442,30 +453,40 @@ contract CertManager is ICertManager {
         maxPathLen = -1;
 
         while (true) {
+            uint256 extensionEnd = _requireAsn1NodeWithin(extensionPtr, end);
             Asn1Ptr oidPtr = certificate.firstChildOf(extensionPtr);
+            _requireAsn1NodeWithin(oidPtr, extensionEnd);
             bytes32 oid = certificate.keccak(oidPtr.content(), oidPtr.length());
 
+            Asn1Ptr valuePtr = certificate.nextSiblingOf(oidPtr);
+            _requireAsn1NodeWithin(valuePtr, extensionEnd);
+
+            if (certificate[valuePtr.header()] == 0x01) {
+                // skip optional critical bool
+                require(valuePtr.length() == 1, "invalid critical bool value");
+                valuePtr = certificate.nextSiblingOf(valuePtr);
+                _requireAsn1NodeWithin(valuePtr, extensionEnd);
+            }
+
+            require(_requireAsn1NodeWithin(valuePtr, extensionEnd) == extensionEnd, "trailing extension fields");
+
             if (oid == BASIC_CONSTRAINTS_OID || oid == KEY_USAGE_OID) {
-                Asn1Ptr valuePtr = certificate.nextSiblingOf(oidPtr);
+                Asn1Ptr valueNodePtr = valuePtr;
 
-                if (certificate[valuePtr.header()] == 0x01) {
-                    // skip optional critical bool
-                    require(valuePtr.length() == 1, "invalid critical bool value");
-                    valuePtr = certificate.nextSiblingOf(valuePtr);
-                }
-
-                valuePtr = certificate.octetString(valuePtr);
+                valuePtr = certificate.octetString(valueNodePtr);
 
                 if (oid == BASIC_CONSTRAINTS_OID) {
+                    require(!basicConstraintsFound, "duplicate basicConstraints");
                     basicConstraintsFound = true;
                     maxPathLen = _verifyBasicConstraintsExtension(certificate, valuePtr, ca);
                 } else {
+                    require(!keyUsageFound, "duplicate keyUsage");
                     keyUsageFound = true;
                     _verifyKeyUsageExtension(certificate, valuePtr, ca);
                 }
             }
 
-            if (extensionPtr.content() + extensionPtr.length() == end) {
+            if (extensionEnd == end) {
                 break;
             }
             extensionPtr = certificate.nextSiblingOf(extensionPtr);
@@ -524,6 +545,11 @@ contract CertManager is ICertManager {
     function _requireAsn1ChildWithin(Asn1Ptr ptr, uint256 parentEnd) internal pure returns (uint256 childEnd) {
         childEnd = ptr.header() + ptr.totalLength();
         require(childEnd <= parentEnd, "basicConstraints out of bounds");
+    }
+
+    function _requireAsn1NodeWithin(Asn1Ptr ptr, uint256 parentEnd) internal pure returns (uint256 nodeEnd) {
+        nodeEnd = ptr.header() + ptr.totalLength();
+        require(nodeEnd <= parentEnd, "ASN.1 node out of bounds");
     }
 
     function _verifyKeyUsageExtension(bytes memory certificate, Asn1Ptr valuePtr, bool ca) internal pure {
