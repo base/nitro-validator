@@ -30,6 +30,16 @@ contract CertManagerHarness is CertManager {
     function verifyBasicConstraints(bytes memory der, bool ca) external pure returns (int64) {
         return _verifyBasicConstraintsExtension(der, der.root(), ca);
     }
+
+    function verifyExtensions(bytes memory der, bool ca) external pure returns (int64) {
+        return _verifyExtensions(der, der.root(), ca);
+    }
+
+    function parseTbs(bytes memory cert, bool ca) external view {
+        Asn1Ptr root = cert.root();
+        Asn1Ptr tbsPtr = cert.firstChildOf(root);
+        _parseTbs(cert, tbsPtr, ca);
+    }
 }
 
 contract CertManagerTest is Test {
@@ -93,6 +103,35 @@ contract CertManagerTest is Test {
     function test_BasicConstraintsRejectsUnknownField() public {
         vm.expectRevert("invalid basicConstraints field");
         certManagerHarness.verifyBasicConstraints(hex"30020400", false);
+    }
+
+    function test_ExtensionsRejectDuplicateBasicConstraints() public {
+        vm.expectRevert("duplicate basicConstraints");
+        certManagerHarness.verifyExtensions(
+            _extensions(bytes.concat(_basicConstraintsExtension(), _basicConstraintsExtension(), _keyUsageExtension())),
+            true
+        );
+    }
+
+    function test_ExtensionsRejectDuplicateKeyUsage() public {
+        vm.expectRevert("duplicate keyUsage");
+        certManagerHarness.verifyExtensions(
+            _extensions(bytes.concat(_basicConstraintsExtension(), _keyUsageExtension(), _keyUsageExtension())), true
+        );
+    }
+
+    function test_ExtensionsRejectTrailingExtensionFields() public {
+        vm.expectRevert("trailing extension fields");
+        certManagerHarness.verifyExtensions(
+            _extensions(bytes.concat(_basicConstraintsExtensionWithTrailingField(), _keyUsageExtension())), true
+        );
+    }
+
+    function test_ParseTbsRejectsTrailingSignedFields() public {
+        bytes memory mutated = _appendTbsTrailingField(CB1);
+
+        vm.expectRevert("trailing tbs fields");
+        certManagerHarness.parseTbs(mutated, true);
     }
 
     // Cert chain from the 2026-04-02 ~15:35 UTC dev attestation that produced the live revert.
@@ -210,6 +249,61 @@ contract CertManagerTest is Test {
         _writeDerLength(result, root, _addDelta(root.length(), delta));
         _writeDerLength(result, sigPtr, _addDelta(sigPtr.length(), delta));
         _writeDerLength(result, sigRoot, _addDelta(sigRoot.length(), delta));
+    }
+
+    function _appendTbsTrailingField(bytes memory certificate) internal pure returns (bytes memory result) {
+        Asn1Ptr root = certificate.root();
+        Asn1Ptr tbsPtr = certificate.firstChildOf(root);
+        bytes memory nullField = hex"0500";
+        int256 delta = int256(nullField.length);
+        result = _insertBytes(certificate, tbsPtr.content() + tbsPtr.length(), nullField);
+
+        _writeDerLength(result, root, _addDelta(root.length(), delta));
+        _writeDerLength(result, tbsPtr, _addDelta(tbsPtr.length(), delta));
+    }
+
+    function _insertBytes(bytes memory input, uint256 offset, bytes memory inserted)
+        internal
+        pure
+        returns (bytes memory result)
+    {
+        result = new bytes(input.length + inserted.length);
+        for (uint256 i = 0; i < offset; ++i) {
+            result[i] = input[i];
+        }
+        for (uint256 i = 0; i < inserted.length; ++i) {
+            result[offset + i] = inserted[i];
+        }
+        for (uint256 i = offset; i < input.length; ++i) {
+            result[i + inserted.length] = input[i];
+        }
+    }
+
+    function _extensions(bytes memory extensionList) internal pure returns (bytes memory) {
+        return _derNode(0xa3, _derNode(0x30, extensionList));
+    }
+
+    function _basicConstraintsExtension() internal pure returns (bytes memory) {
+        return _derNode(0x30, bytes.concat(hex"0603551d13", hex"0101ff", _derNode(0x04, hex"30060101ff020100")));
+    }
+
+    function _basicConstraintsExtensionWithTrailingField() internal pure returns (bytes memory) {
+        return
+            _derNode(0x30, bytes.concat(hex"0603551d13", hex"0101ff", _derNode(0x04, hex"30060101ff020100"), hex"0500"));
+    }
+
+    function _keyUsageExtension() internal pure returns (bytes memory) {
+        return _derNode(0x30, bytes.concat(hex"0603551d0f", hex"0101ff", _derNode(0x04, hex"03020186")));
+    }
+
+    function _derNode(bytes1 tag, bytes memory content) internal pure returns (bytes memory der) {
+        require(content.length < 128, "test: long-form length not supported");
+        der = new bytes(2 + content.length);
+        der[0] = tag;
+        der[1] = bytes1(uint8(content.length));
+        for (uint256 i = 0; i < content.length; ++i) {
+            der[2 + i] = content[i];
+        }
     }
 
     function _certSignaturePtrs(bytes memory certificate)
