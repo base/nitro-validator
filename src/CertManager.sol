@@ -319,10 +319,8 @@ contract CertManager is ICertManager {
         bytes memory signatureHints
     ) internal view returns (VerifiedCert memory cert, bytes32 identity) {
         Asn1Ptr root = certificate.root();
-        _requireAsn1Tag(certificate, root, 0x30);
         require(root.totalLength() == certificate.length, "invalid cert length");
         Asn1Ptr tbsCertPtr = certificate.firstChildOf(root);
-        _requireAsn1Tag(certificate, tbsCertPtr, 0x30);
         (uint64 notAfter, int64 maxPathLen, bytes32 issuerHash, bytes32 subjectHash, bytes memory pubKey) =
             _parseTbs(certificate, tbsCertPtr, ca);
 
@@ -414,7 +412,6 @@ contract CertManager is ICertManager {
         pure
         returns (bytes memory subjectPubKey)
     {
-        _requireAsn1Tag(certificate, subjectPublicKeyInfoPtr, 0x30);
         Asn1Ptr pubKeyAlgoPtr = certificate.firstChildOf(subjectPublicKeyInfoPtr);
         _requireAsn1Tag(certificate, pubKeyAlgoPtr, 0x30);
         Asn1Ptr pubKeyAlgoIdPtr = certificate.firstChildOf(pubKeyAlgoPtr);
