@@ -371,27 +371,21 @@ contract CertManager is ICertManager {
         view
         returns (uint64 notAfter, int64 maxPathLen, bytes32 issuerHash, bytes32 subjectHash, bytes memory pubKey)
     {
-        Asn1Ptr issuerPtr = certificate.nextSiblingOf(sigAlgoPtr);
-        _requireAsn1NodeWithin(issuerPtr, tbsEnd);
+        Asn1Ptr issuerPtr = _nextSiblingWithin(certificate, sigAlgoPtr, tbsEnd);
         issuerHash = certificate.keccak(issuerPtr.content(), issuerPtr.length());
-        Asn1Ptr validityPtr = certificate.nextSiblingOf(issuerPtr);
-        _requireAsn1NodeWithin(validityPtr, tbsEnd);
-        Asn1Ptr subjectPtr = certificate.nextSiblingOf(validityPtr);
-        _requireAsn1NodeWithin(subjectPtr, tbsEnd);
+        Asn1Ptr validityPtr = _nextSiblingWithin(certificate, issuerPtr, tbsEnd);
+        Asn1Ptr subjectPtr = _nextSiblingWithin(certificate, validityPtr, tbsEnd);
         subjectHash = certificate.keccak(subjectPtr.content(), subjectPtr.length());
-        Asn1Ptr subjectPublicKeyInfoPtr = certificate.nextSiblingOf(subjectPtr);
-        _requireAsn1NodeWithin(subjectPublicKeyInfoPtr, tbsEnd);
-        Asn1Ptr extensionsPtr = certificate.nextSiblingOf(subjectPublicKeyInfoPtr);
+        Asn1Ptr subjectPublicKeyInfoPtr = _nextSiblingWithin(certificate, subjectPtr, tbsEnd);
+        Asn1Ptr extensionsPtr = _nextSiblingWithin(certificate, subjectPublicKeyInfoPtr, tbsEnd);
 
         if (certificate[extensionsPtr.header()] == 0x81) {
             // skip optional issuerUniqueID
-            _requireAsn1NodeWithin(extensionsPtr, tbsEnd);
-            extensionsPtr = certificate.nextSiblingOf(extensionsPtr);
+            extensionsPtr = _nextSiblingWithin(certificate, extensionsPtr, tbsEnd);
         }
         if (certificate[extensionsPtr.header()] == 0x82) {
             // skip optional subjectUniqueID
-            _requireAsn1NodeWithin(extensionsPtr, tbsEnd);
-            extensionsPtr = certificate.nextSiblingOf(extensionsPtr);
+            extensionsPtr = _nextSiblingWithin(certificate, extensionsPtr, tbsEnd);
         }
         require(_requireAsn1NodeWithin(extensionsPtr, tbsEnd) == tbsEnd, "trailing tbs fields");
 
@@ -446,26 +440,23 @@ contract CertManager is ICertManager {
     {
         require(certificate[extensionsPtr.header()] == 0xa3, "invalid extensions");
         extensionsPtr = certificate.firstChildOf(extensionsPtr);
-        Asn1Ptr extensionPtr = certificate.firstChildOf(extensionsPtr);
         uint256 end = extensionsPtr.content() + extensionsPtr.length();
+        Asn1Ptr extensionPtr = _firstChildWithin(certificate, extensionsPtr, end);
         bool basicConstraintsFound = false;
         bool keyUsageFound = false;
         maxPathLen = -1;
 
         while (true) {
             uint256 extensionEnd = _requireAsn1NodeWithin(extensionPtr, end);
-            Asn1Ptr oidPtr = certificate.firstChildOf(extensionPtr);
-            _requireAsn1NodeWithin(oidPtr, extensionEnd);
+            Asn1Ptr oidPtr = _firstChildWithin(certificate, extensionPtr, extensionEnd);
             bytes32 oid = certificate.keccak(oidPtr.content(), oidPtr.length());
 
-            Asn1Ptr valuePtr = certificate.nextSiblingOf(oidPtr);
-            _requireAsn1NodeWithin(valuePtr, extensionEnd);
+            Asn1Ptr valuePtr = _nextSiblingWithin(certificate, oidPtr, extensionEnd);
 
             if (certificate[valuePtr.header()] == 0x01) {
                 // skip optional critical bool
                 require(valuePtr.length() == 1, "invalid critical bool value");
-                valuePtr = certificate.nextSiblingOf(valuePtr);
-                _requireAsn1NodeWithin(valuePtr, extensionEnd);
+                valuePtr = _nextSiblingWithin(certificate, valuePtr, extensionEnd);
             }
 
             require(_requireAsn1NodeWithin(valuePtr, extensionEnd) == extensionEnd, "trailing extension fields");
@@ -489,7 +480,7 @@ contract CertManager is ICertManager {
             if (extensionEnd == end) {
                 break;
             }
-            extensionPtr = certificate.nextSiblingOf(extensionPtr);
+            extensionPtr = _nextSiblingWithin(certificate, extensionPtr, end);
         }
 
         require(basicConstraintsFound, "basicConstraints not found");
@@ -550,6 +541,20 @@ contract CertManager is ICertManager {
     function _requireAsn1NodeWithin(Asn1Ptr ptr, uint256 parentEnd) internal pure returns (uint256 nodeEnd) {
         nodeEnd = ptr.header() + ptr.totalLength();
         require(nodeEnd <= parentEnd, "ASN.1 node out of bounds");
+    }
+
+    function _firstChildWithin(bytes memory der, Asn1Ptr ptr, uint256 parentEnd) internal pure returns (Asn1Ptr child) {
+        child = der.firstChildOf(ptr);
+        _requireAsn1NodeWithin(child, parentEnd);
+    }
+
+    function _nextSiblingWithin(bytes memory der, Asn1Ptr ptr, uint256 parentEnd)
+        internal
+        pure
+        returns (Asn1Ptr sibling)
+    {
+        sibling = der.nextSiblingOf(ptr);
+        _requireAsn1NodeWithin(sibling, parentEnd);
     }
 
     function _verifyKeyUsageExtension(bytes memory certificate, Asn1Ptr valuePtr, bool ca) internal pure {
