@@ -166,6 +166,38 @@ contract CertManagerTest is Test {
         cm.verifyCACertWithHints(rootTwin, rootHash, hints);
     }
 
+    function test_VerifyCACertWithHints_RejectsSignatureWrapperTagSubstitution() public {
+        vm.warp(1775145600);
+        CertManager cm = new CertManager(new P384Verifier());
+        P384HintCollector collector = new P384HintCollector();
+
+        bytes32 rootHash = keccak256(CB0);
+        bytes memory parentPubKey = cm.loadVerified(rootHash).pubKey;
+        bytes memory hints = collector.collectCertSignatureHints(CB1, parentPubKey);
+
+        bytes memory mutated = bytes.concat(CB1);
+        (,, Asn1Ptr sigRoot,) = _certSignaturePtrs(mutated);
+        mutated[sigRoot.header()] = 0x31; // constructed SET with the same r/s children.
+
+        vm.expectRevert("invalid cert signature");
+        cm.verifyCACertWithHints(mutated, rootHash, hints);
+    }
+
+    function test_VerifyCACertWithHints_RejectsTrailingSignatureFields() public {
+        vm.warp(1775145600);
+        CertManager cm = new CertManager(new P384Verifier());
+        P384HintCollector collector = new P384HintCollector();
+
+        bytes32 rootHash = keccak256(CB0);
+        bytes memory parentPubKey = cm.loadVerified(rootHash).pubKey;
+        bytes memory hints = collector.collectCertSignatureHints(CB1, parentPubKey);
+
+        bytes memory mutated = _appendSignatureTrailingField(CB1);
+
+        vm.expectRevert("invalid cert signature");
+        cm.verifyCACertWithHints(mutated, rootHash, hints);
+    }
+
     function _verifyCA(CertManager cm, P384HintCollector collector, bytes memory cert, bytes32 parentHash)
         internal
         returns (bytes32)
@@ -210,6 +242,34 @@ contract CertManagerTest is Test {
         _writeDerLength(result, root, _addDelta(root.length(), delta));
         _writeDerLength(result, sigPtr, _addDelta(sigPtr.length(), delta));
         _writeDerLength(result, sigRoot, _addDelta(sigRoot.length(), delta));
+    }
+
+    function _appendSignatureTrailingField(bytes memory certificate) internal pure returns (bytes memory result) {
+        (Asn1Ptr root, Asn1Ptr sigPtr, Asn1Ptr sigRoot,) = _certSignaturePtrs(certificate);
+        bytes memory extraInteger = hex"020100";
+        int256 delta = int256(extraInteger.length);
+        result = _insertBytes(certificate, sigRoot.content() + sigRoot.length(), extraInteger);
+
+        _writeDerLength(result, root, _addDelta(root.length(), delta));
+        _writeDerLength(result, sigPtr, _addDelta(sigPtr.length(), delta));
+        _writeDerLength(result, sigRoot, _addDelta(sigRoot.length(), delta));
+    }
+
+    function _insertBytes(bytes memory input, uint256 offset, bytes memory inserted)
+        internal
+        pure
+        returns (bytes memory result)
+    {
+        result = new bytes(input.length + inserted.length);
+        for (uint256 i = 0; i < offset; ++i) {
+            result[i] = input[i];
+        }
+        for (uint256 i = 0; i < inserted.length; ++i) {
+            result[offset + i] = inserted[i];
+        }
+        for (uint256 i = offset; i < input.length; ++i) {
+            result[i + inserted.length] = input[i];
+        }
     }
 
     function _certSignaturePtrs(bytes memory certificate)

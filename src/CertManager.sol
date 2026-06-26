@@ -557,8 +557,17 @@ contract CertManager is ICertManager {
     function _certSignature(bytes memory certificate, Asn1Ptr sigPtr) internal pure returns (bytes memory sigPacked) {
         Asn1Ptr sigBPtr = certificate.bitstring(sigPtr);
         Asn1Ptr sigRoot = certificate.rootOf(sigBPtr);
+        require(certificate[sigRoot.header()] == 0x30, "invalid cert signature");
+        require(
+            sigRoot.header() + sigRoot.totalLength() == sigBPtr.content() + sigBPtr.length(), "invalid cert signature"
+        );
         Asn1Ptr sigRPtr = certificate.firstChildOf(sigRoot);
+        require(certificate[sigRPtr.header()] == 0x02, "invalid cert signature");
         Asn1Ptr sigSPtr = certificate.nextSiblingOf(sigRPtr);
+        require(certificate[sigSPtr.header()] == 0x02, "invalid cert signature");
+        require(
+            sigSPtr.header() + sigSPtr.totalLength() == sigRoot.content() + sigRoot.length(), "invalid cert signature"
+        );
         (uint128 rhi, uint256 rlo) = certificate.uint384At(sigRPtr);
         (uint128 shi, uint256 slo) = certificate.uint384At(sigSPtr);
         sigPacked = abi.encodePacked(rhi, rlo, shi, slo);
