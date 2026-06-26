@@ -17,6 +17,8 @@ contract CertManager is ICertManager {
     using LibAsn1Ptr for Asn1Ptr;
     using LibBytes for bytes;
 
+    error InvalidCertSignature();
+
     event CertVerified(bytes32 indexed certHash);
     event CertRevoked(bytes32 indexed certHash);
     event CertUnrevoked(bytes32 indexed certHash);
@@ -557,17 +559,17 @@ contract CertManager is ICertManager {
     function _certSignature(bytes memory certificate, Asn1Ptr sigPtr) internal pure returns (bytes memory sigPacked) {
         Asn1Ptr sigBPtr = certificate.bitstring(sigPtr);
         Asn1Ptr sigRoot = certificate.rootOf(sigBPtr);
-        require(certificate[sigRoot.header()] == 0x30, "invalid cert signature");
-        require(
-            sigRoot.header() + sigRoot.totalLength() == sigBPtr.content() + sigBPtr.length(), "invalid cert signature"
-        );
+        if (certificate[sigRoot.header()] != 0x30) revert InvalidCertSignature();
+        if (sigRoot.header() + sigRoot.totalLength() != sigBPtr.content() + sigBPtr.length()) {
+            revert InvalidCertSignature();
+        }
         Asn1Ptr sigRPtr = certificate.firstChildOf(sigRoot);
-        require(certificate[sigRPtr.header()] == 0x02, "invalid cert signature");
+        if (certificate[sigRPtr.header()] != 0x02) revert InvalidCertSignature();
         Asn1Ptr sigSPtr = certificate.nextSiblingOf(sigRPtr);
-        require(certificate[sigSPtr.header()] == 0x02, "invalid cert signature");
-        require(
-            sigSPtr.header() + sigSPtr.totalLength() == sigRoot.content() + sigRoot.length(), "invalid cert signature"
-        );
+        if (certificate[sigSPtr.header()] != 0x02) revert InvalidCertSignature();
+        if (sigSPtr.header() + sigSPtr.totalLength() != sigRoot.content() + sigRoot.length()) {
+            revert InvalidCertSignature();
+        }
         (uint128 rhi, uint256 rlo) = certificate.uint384At(sigRPtr);
         (uint128 shi, uint256 slo) = certificate.uint384At(sigSPtr);
         sigPacked = abi.encodePacked(rhi, rlo, shi, slo);

@@ -179,7 +179,7 @@ contract CertManagerTest is Test {
         (,, Asn1Ptr sigRoot,) = _certSignaturePtrs(mutated);
         mutated[sigRoot.header()] = 0x31; // constructed SET with the same r/s children.
 
-        vm.expectRevert("invalid cert signature");
+        vm.expectRevert(CertManager.InvalidCertSignature.selector);
         cm.verifyCACertWithHints(mutated, rootHash, hints);
     }
 
@@ -194,7 +194,7 @@ contract CertManagerTest is Test {
 
         bytes memory mutated = _appendSignatureTrailingField(CB1);
 
-        vm.expectRevert("invalid cert signature");
+        vm.expectRevert(CertManager.InvalidCertSignature.selector);
         cm.verifyCACertWithHints(mutated, rootHash, hints);
     }
 
