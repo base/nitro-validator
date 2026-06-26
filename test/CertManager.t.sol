@@ -166,6 +166,35 @@ contract CertManagerTest is Test {
         cm.verifyCACertWithHints(rootTwin, rootHash, hints);
     }
 
+    function test_VerifyCACertWithHints_RejectsOuterTagSubstitution() public {
+        vm.warp(1775145600);
+        CertManager cm = new CertManager(new P384Verifier());
+
+        bytes32 rootHash = keccak256(CB0);
+        bytes memory mutated = bytes.concat(CB1);
+        mutated[0] = 0x31; // constructed SET with the same children is not an X.509 Certificate SEQUENCE.
+
+        vm.expectRevert(CertManager.InvalidAsn1Tag.selector);
+        cm.verifyCACertWithHints(mutated, rootHash, "");
+    }
+
+    function test_VerifyCACertWithHints_RejectsTbsAlgorithmTagSubstitution() public {
+        vm.warp(1775145600);
+        CertManager cm = new CertManager(new P384Verifier());
+
+        bytes32 rootHash = keccak256(CB0);
+        bytes memory mutated = bytes.concat(CB1);
+        Asn1Ptr root = mutated.root();
+        Asn1Ptr tbsPtr = mutated.firstChildOf(root);
+        Asn1Ptr versionPtr = mutated.firstChildOf(tbsPtr);
+        Asn1Ptr serialPtr = mutated.nextSiblingOf(versionPtr);
+        Asn1Ptr sigAlgoPtr = mutated.nextSiblingOf(serialPtr);
+        mutated[sigAlgoPtr.header()] = 0x31; // constructed, but not AlgorithmIdentifier SEQUENCE.
+
+        vm.expectRevert(CertManager.InvalidAsn1Tag.selector);
+        cm.verifyCACertWithHints(mutated, rootHash, "");
+    }
+
     function _verifyCA(CertManager cm, P384HintCollector collector, bytes memory cert, bytes32 parentHash)
         internal
         returns (bytes32)
