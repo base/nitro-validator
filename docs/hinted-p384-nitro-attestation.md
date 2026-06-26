@@ -379,6 +379,28 @@ neither the cert nor its cached parent chain is revoked. The cache is global on-
 state — once any caller verifies a cert, others reuse it until expiry or revocation,
 but only under the same parent binding.
 
+### Certificate parser hardening model
+
+Certificate verification intentionally depends on a narrow X.509/DER subset rather
+than on generic BER-like ASN.1 acceptance. The cache key fix makes outside-TBS byte
+malleability non-poisoning, but accepting non-canonical certificate structures can
+still create parser disagreement with stricter X.509 implementations. Keep the parser
+biased toward rejection when a cert uses an alternate encoding for the same apparent
+fields.
+
+In particular, hardening changes should preserve these invariants:
+
+- certificate and TBSCertificate containers are the expected X.509 SEQUENCE objects;
+- signature INTEGERs use canonical positive DER encodings, not redundant sign bytes;
+- the certificate signature BIT STRING contains exactly `SEQUENCE(INTEGER r, INTEGER s)`;
+- signed TBS and extension structures do not contain trailing ignored fields;
+- known security extensions such as `basicConstraints` and `keyUsage` are unique.
+
+The value of these checks is defense in depth: an attacker cannot rewrite the signed
+TBS of an existing AWS cert without breaking its signature, but the contract should
+also avoid trusting certs that are signed yet malformed or interpreted differently by
+strict DER/X.509 tooling.
+
 ### Revocation model
 AWS's Nitro attestation documentation disables CRL checking in its sample validation
 flow. This implementation keeps CRL parsing off-chain and exposes an operational
