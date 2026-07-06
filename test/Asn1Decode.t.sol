@@ -51,7 +51,7 @@ contract Asn1DecodeTest is Test {
     // --- readNodeLength / tag handling ---
 
     function test_root_multiByteTag_reverts() public {
-        vm.expectRevert("ASN.1 tags longer than 1-byte are not supported");
+        vm.expectRevert(Asn1Decode.UnsupportedAsn1Tag.selector);
         h.rootLength(hex"1f00"); // low tag bits 0x1f == high-tag-number form
     }
 
@@ -66,6 +66,28 @@ contract Asn1DecodeTest is Test {
         h.rootLength(hex"0289ffffffffffffffffff"); // INTEGER, 9 length bytes all 0xff
     }
 
+    function test_root_indefiniteLength_reverts() public {
+        vm.expectRevert(Asn1Decode.InvalidAsn1Length.selector);
+        h.rootLength(hex"0480"); // DER requires definite lengths
+    }
+
+    function test_root_longFormForShortLength_reverts() public {
+        vm.expectRevert(Asn1Decode.InvalidAsn1Length.selector);
+        h.rootLength(hex"04810100"); // length 1 must use short form 0x01
+    }
+
+    function test_root_longFormLeadingZero_reverts() public {
+        vm.expectRevert(Asn1Decode.InvalidAsn1Length.selector);
+        h.rootLength(hex"04820080"); // length 128 must be 0x81 0x80, not 0x82 0x00 0x80
+    }
+
+    function test_root_canonicalLongFormLength() public view {
+        bytes memory der = abi.encodePacked(bytes3(0x048180), new bytes(128));
+
+        assertEq(h.rootLength(der), 128);
+        assertEq(h.rootContent(der), 3);
+    }
+
     // --- uintAt ---
 
     function test_uintAt_value() public view {
@@ -77,22 +99,22 @@ contract Asn1DecodeTest is Test {
     }
 
     function test_uintAt_unnecessaryLeadingZero_reverts() public {
-        vm.expectRevert("non-canonical INTEGER");
+        vm.expectRevert(Asn1Decode.InvalidAsn1Value.selector);
         h.uintAtRoot(hex"0202007f");
     }
 
     function test_uintAt_empty_reverts() public {
-        vm.expectRevert("invalid INTEGER length");
+        vm.expectRevert(Asn1Decode.InvalidAsn1Length.selector);
         h.uintAtRoot(hex"0200");
     }
 
     function test_uintAt_notInteger_reverts() public {
-        vm.expectRevert("Not type INTEGER");
+        vm.expectRevert(Asn1Decode.InvalidAsn1Type.selector);
         h.uintAtRoot(hex"0401ff"); // OCTET STRING, not INTEGER
     }
 
     function test_uintAt_negative_reverts() public {
-        vm.expectRevert("Not positive");
+        vm.expectRevert(Asn1Decode.InvalidAsn1Value.selector);
         h.uintAtRoot(hex"020180"); // high bit set
     }
 
@@ -109,12 +131,12 @@ contract Asn1DecodeTest is Test {
     }
 
     function test_uint384At_unnecessaryLeadingZero_reverts() public {
-        vm.expectRevert("non-canonical INTEGER");
+        vm.expectRevert(Asn1Decode.InvalidAsn1Value.selector);
         h.uint384AtRoot(hex"0202007f");
     }
 
     function test_uint384At_empty_reverts() public {
-        vm.expectRevert("invalid INTEGER length");
+        vm.expectRevert(Asn1Decode.InvalidAsn1Length.selector);
         h.uint384AtRoot(hex"0200");
     }
 
@@ -132,23 +154,23 @@ contract Asn1DecodeTest is Test {
 
     function test_timestamp_wrongType_reverts() public {
         bytes memory der = abi.encodePacked(hex"160d", bytes("700101000000Z")); // type 0x16
-        vm.expectRevert("Invalid TIMESTAMP");
+        vm.expectRevert(Asn1Decode.InvalidAsn1Value.selector);
         h.timestampAtRoot(der);
     }
 
     function test_timestamp_wrongLength_reverts() public {
         bytes memory der = abi.encodePacked(hex"170c", bytes("70010100000Z")); // UTCTime, length 12
-        vm.expectRevert("Invalid TIMESTAMP");
+        vm.expectRevert(Asn1Decode.InvalidAsn1Value.selector);
         h.timestampAtRoot(der);
     }
 
     function test_timestamp_missingZ_reverts() public {
-        vm.expectRevert("TIMESTAMP must be UTC");
+        vm.expectRevert(Asn1Decode.InvalidAsn1Value.selector);
         h.timestampAtRoot(_utcTime("700101000000X"));
     }
 
     function test_timestamp_nonDigit_reverts() public {
-        vm.expectRevert("Invalid character in TIMESTAMP");
+        vm.expectRevert(Asn1Decode.InvalidAsn1Value.selector);
         h.timestampAtRoot(_utcTime("7A0101000000Z"));
     }
 
@@ -160,12 +182,12 @@ contract Asn1DecodeTest is Test {
     }
 
     function test_bitstring_notBitString_reverts() public {
-        vm.expectRevert("Not type BIT STRING");
+        vm.expectRevert(Asn1Decode.InvalidAsn1Type.selector);
         h.bitstringContent(hex"0401ff");
     }
 
     function test_bitstring_nonZeroPadded_reverts() public {
-        vm.expectRevert("Non-0-padded BIT STRING");
+        vm.expectRevert(Asn1Decode.InvalidAsn1Value.selector);
         h.bitstringContent(hex"03020100"); // pad byte is 0x01, not 0x00
     }
 
@@ -190,24 +212,24 @@ contract Asn1DecodeTest is Test {
     }
 
     function test_bitstringUintAt_nonZeroUnusedBits_reverts() public {
-        vm.expectRevert("Non-zero unused BIT STRING bits");
+        vm.expectRevert(Asn1Decode.InvalidAsn1Value.selector);
         h.bitstringUintAtRoot(hex"03030700ff");
     }
 
     function test_bitstringUintAt_invalidUnusedBits_reverts() public {
-        vm.expectRevert("invalid BIT STRING padding");
+        vm.expectRevert(Asn1Decode.InvalidAsn1Value.selector);
         h.bitstringUintAtRoot(hex"03020880");
     }
 
     function test_bitstringUintAt_missingUnusedBits_reverts() public {
-        vm.expectRevert("invalid BIT STRING length");
+        vm.expectRevert(Asn1Decode.InvalidAsn1Length.selector);
         h.bitstringUintAtRoot(hex"0300");
     }
 
     // --- firstChildOf ---
 
     function test_firstChildOf_notConstructed_reverts() public {
-        vm.expectRevert("Not a constructed type");
+        vm.expectRevert(Asn1Decode.InvalidAsn1Type.selector);
         h.firstChildHeader(hex"0401ff"); // OCTET STRING is primitive, not constructed
     }
 
