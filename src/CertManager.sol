@@ -18,10 +18,20 @@ contract CertManager is ICertManager {
     using LibBytes for bytes;
 
     error InvalidAsn1Tag();
+    error InvalidExtension();
+    error InvalidBasicConstraints();
+    error InvalidSubjectPublicKey();
+    error UnsupportedCriticalExtension();
+    error NotOwner();
+    error NotRevoker();
+    error IncompleteCertChain();
+    error DeprecatedEntrypoint();
+    error InvalidOwner();
+    error InvalidRevoker();
 
     event CertVerified(bytes32 indexed certHash);
-    event CertRevoked(bytes32 indexed certHash);
-    event CertUnrevoked(bytes32 indexed certHash);
+    event CertRevoked(bytes32 indexed certHash, address indexed account);
+    event CertUnrevoked(bytes32 indexed certHash, address indexed account);
     event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
     event RevokerUpdated(address indexed previousRevoker, address indexed newRevoker);
 
@@ -80,11 +90,11 @@ contract CertManager is ICertManager {
     }
 
     function _onlyOwner() internal view {
-        require(msg.sender == owner, "not owner");
+        if (msg.sender != owner) revert NotOwner();
     }
 
     function _onlyRevoker() internal view {
-        require(msg.sender == revoker, "not revoker");
+        if (msg.sender != revoker) revert NotRevoker();
     }
 
     constructor(IP384Verifier p384Verifier_) {
@@ -109,12 +119,12 @@ contract CertManager is ICertManager {
     /// @notice DEPRECATED — always reverts. The fully on-chain (non-hinted) path is too expensive
     ///         post-Fusaka and has been removed. Use {verifyCACertWithHints}.
     function verifyCACert(bytes memory, bytes32) external pure returns (bytes32) {
-        revert("use hinted cert verification");
+        revert DeprecatedEntrypoint();
     }
 
     /// @notice DEPRECATED — always reverts. Use {verifyClientCertWithHints}.
     function verifyClientCert(bytes memory, bytes32) external pure returns (VerifiedCert memory) {
-        revert("use hinted cert verification");
+        revert DeprecatedEntrypoint();
     }
 
     /// @notice Verify a CA certificate against its (already-cached) parent and cache the result.
@@ -173,13 +183,13 @@ contract CertManager is ICertManager {
     }
 
     function transferOwnership(address newOwner) external onlyOwner {
-        require(newOwner != address(0), "invalid owner");
+        if (newOwner == address(0)) revert InvalidOwner();
         emit OwnershipTransferred(owner, newOwner);
         owner = newOwner;
     }
 
     function setRevoker(address newRevoker) external onlyOwner {
-        require(newRevoker != address(0), "invalid revoker");
+        if (newRevoker == address(0)) revert InvalidRevoker();
         emit RevokerUpdated(revoker, newRevoker);
         revoker = newRevoker;
     }
@@ -200,12 +210,12 @@ contract CertManager is ICertManager {
 
     function unrevokeCert(bytes32 certId) external onlyOwner {
         revoked[certId] = false;
-        emit CertUnrevoked(certId);
+        emit CertUnrevoked(certId, msg.sender);
     }
 
     function _revokeCert(bytes32 certId) internal {
         revoked[certId] = true;
-        emit CertRevoked(certId);
+        emit CertRevoked(certId, msg.sender);
     }
 
     function _requireCanRevoke(bytes32 certId) internal view {
@@ -240,7 +250,7 @@ contract CertManager is ICertManager {
         // Fail closed: a chain that terminates at bytes32(0) without reaching the pinned root is
         // broken and must not be treated as a verified, non-revoked chain. Reverting here instead
         // of returning silently means revocation safety never depends on upstream guards.
-        revert("incomplete cert chain");
+        revert IncompleteCertChain();
     }
 
     function _verifyCert(
@@ -419,17 +429,19 @@ contract CertManager is ICertManager {
         Asn1Ptr subjectPublicKeyPtr = certificate.nextSiblingOf(pubKeyAlgoPtr);
         Asn1Ptr subjectPubKeyPtr = certificate.bitstring(subjectPublicKeyPtr);
 
-        require(
-            certificate.keccak(pubKeyAlgoIdPtr.content(), pubKeyAlgoIdPtr.length()) == EC_PUB_KEY_OID,
-            "invalid cert algo id"
-        );
-        require(
-            certificate.keccak(algoParamsPtr.content(), algoParamsPtr.length()) == SECP_384_R1_OID,
-            "invalid cert algo param"
-        );
+        if (certificate.keccak(pubKeyAlgoIdPtr.content(), pubKeyAlgoIdPtr.length()) != EC_PUB_KEY_OID) {
+            revert InvalidSubjectPublicKey();
+        }
+        if (certificate.keccak(algoParamsPtr.content(), algoParamsPtr.length()) != SECP_384_R1_OID) {
+            revert InvalidSubjectPublicKey();
+        }
 
-        uint256 end = subjectPubKeyPtr.content() + subjectPubKeyPtr.length();
-        subjectPubKey = certificate.slice(end - 96, 96);
+        uint256 keyStart = subjectPubKeyPtr.content();
+        uint256 keyLength = subjectPubKeyPtr.length();
+        if (keyLength != 97 || keyStart + keyLength > certificate.length || certificate[keyStart] != 0x04) {
+            revert InvalidSubjectPublicKey();
+        }
+        subjectPubKey = certificate.slice(keyStart + 1, 96);
     }
 
     function _verifyValidity(bytes memory certificate, Asn1Ptr validityPtr) internal view returns (uint64 notAfter) {
@@ -452,7 +464,7 @@ contract CertManager is ICertManager {
         pure
         returns (int64 maxPathLen)
     {
-        require(certificate[extensionsPtr.header()] == 0xa3, "invalid extensions");
+        if (certificate[extensionsPtr.header()] != 0xa3) revert InvalidExtension();
         extensionsPtr = certificate.firstChildOf(extensionsPtr);
         _requireAsn1Tag(certificate, extensionsPtr, 0x30);
         Asn1Ptr extensionPtr = certificate.firstChildOf(extensionsPtr);
@@ -465,16 +477,16 @@ contract CertManager is ICertManager {
             _requireAsn1Tag(certificate, extensionPtr, 0x30);
             Asn1Ptr oidPtr = certificate.firstChildOf(extensionPtr);
             bytes32 oid = certificate.keccak(oidPtr.content(), oidPtr.length());
+            Asn1Ptr valuePtr = certificate.nextSiblingOf(oidPtr);
+            bool recognized = oid == BASIC_CONSTRAINTS_OID || oid == KEY_USAGE_OID;
 
-            if (oid == BASIC_CONSTRAINTS_OID || oid == KEY_USAGE_OID) {
-                Asn1Ptr valuePtr = certificate.nextSiblingOf(oidPtr);
+            if (certificate[valuePtr.header()] == 0x01) {
+                if (valuePtr.length() != 1) revert InvalidExtension();
+                if (!recognized && certificate[valuePtr.content()] != 0x00) revert UnsupportedCriticalExtension();
+                valuePtr = certificate.nextSiblingOf(valuePtr);
+            }
 
-                if (certificate[valuePtr.header()] == 0x01) {
-                    // skip optional critical bool
-                    require(valuePtr.length() == 1, "invalid critical bool value");
-                    valuePtr = certificate.nextSiblingOf(valuePtr);
-                }
-
+            if (recognized) {
                 valuePtr = certificate.octetString(valuePtr);
 
                 if (oid == BASIC_CONSTRAINTS_OID) {
@@ -492,9 +504,7 @@ contract CertManager is ICertManager {
             extensionPtr = certificate.nextSiblingOf(extensionPtr);
         }
 
-        require(basicConstraintsFound, "basicConstraints not found");
-        require(keyUsageFound, "keyUsage not found");
-        require(ca || maxPathLen == -1, "maxPathLen must be undefined for client cert");
+        if (!basicConstraintsFound || !keyUsageFound || (!ca && maxPathLen != -1)) revert InvalidExtension();
     }
 
     function _verifyBasicConstraintsExtension(bytes memory certificate, Asn1Ptr valuePtr, bool ca)
@@ -502,7 +512,7 @@ contract CertManager is ICertManager {
         pure
         returns (int64 maxPathLen)
     {
-        require(certificate[valuePtr.header()] == 0x30, "invalid basicConstraints");
+        if (certificate[valuePtr.header()] != 0x30) revert InvalidBasicConstraints();
 
         maxPathLen = -1;
         bool isCA;
@@ -514,11 +524,11 @@ contract CertManager is ICertManager {
             cursor = _requireAsn1ChildWithin(basicConstraintsPtr, end);
 
             if (certificate[basicConstraintsPtr.header()] == 0x01) {
-                require(basicConstraintsPtr.length() == 1, "invalid isCA bool value");
+                if (basicConstraintsPtr.length() != 1) revert InvalidBasicConstraints();
                 isCA = certificate[basicConstraintsPtr.content()] == 0xff;
 
                 if (cursor == end) {
-                    require(ca == isCA, "isCA must be true for CA certs");
+                    if (ca != isCA) revert InvalidBasicConstraints();
                     return maxPathLen;
                 }
 
@@ -526,25 +536,25 @@ contract CertManager is ICertManager {
                 cursor = _requireAsn1ChildWithin(basicConstraintsPtr, end);
             }
 
-            require(ca == isCA, "isCA must be true for CA certs");
+            if (ca != isCA) revert InvalidBasicConstraints();
 
             if (certificate[basicConstraintsPtr.header()] == 0x02) {
-                require(basicConstraintsPtr.length() > 0, "invalid pathLenConstraint");
+                if (basicConstraintsPtr.length() == 0) revert InvalidBasicConstraints();
                 maxPathLen = int64(uint64(certificate.uintAt(basicConstraintsPtr)));
             } else {
-                revert("invalid basicConstraints field");
+                revert InvalidBasicConstraints();
             }
 
-            require(cursor == end, "trailing basicConstraints fields");
+            if (cursor != end) revert InvalidBasicConstraints();
             return maxPathLen;
         }
 
-        require(ca == isCA, "isCA must be true for CA certs");
+        if (ca != isCA) revert InvalidBasicConstraints();
     }
 
     function _requireAsn1ChildWithin(Asn1Ptr ptr, uint256 parentEnd) internal pure returns (uint256 childEnd) {
         childEnd = ptr.header() + ptr.totalLength();
-        require(childEnd <= parentEnd, "basicConstraints out of bounds");
+        if (childEnd > parentEnd) revert InvalidBasicConstraints();
     }
 
     function _verifyKeyUsageExtension(bytes memory certificate, Asn1Ptr valuePtr, bool ca) internal pure {

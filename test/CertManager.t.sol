@@ -32,6 +32,34 @@ contract CertManagerHarness is CertManager {
     }
 }
 
+contract CertManagerPubKeyHarness is CertManager {
+    using Asn1Decode for bytes;
+
+    constructor() CertManager(new P384Verifier()) {}
+
+    function parsePubKey(bytes memory subjectPublicKeyInfo) external pure returns (bytes memory) {
+        return _parsePubKey(subjectPublicKeyInfo, subjectPublicKeyInfo.root());
+    }
+
+    function parsePubKeyAt(bytes memory certificate, uint256 header, uint256 content, uint256 length)
+        external
+        pure
+        returns (bytes memory)
+    {
+        return _parsePubKey(certificate, LibAsn1Ptr.toAsn1Ptr(header, content, length));
+    }
+}
+
+contract CertManagerExtensionsHarness is CertManager {
+    using Asn1Decode for bytes;
+
+    constructor() CertManager(new P384Verifier()) {}
+
+    function verifyExtensions(bytes memory der, bool ca) external pure returns (int64) {
+        return _verifyExtensions(der, der.root(), ca);
+    }
+}
+
 contract CertManagerTest is Test {
     using Asn1Decode for bytes;
     using LibAsn1Ptr for Asn1Ptr;
@@ -39,10 +67,14 @@ contract CertManagerTest is Test {
 
     Asn1DecodeHarness public harness;
     CertManagerHarness public certManagerHarness;
+    CertManagerPubKeyHarness public certManagerPubKeyHarness;
+    CertManagerExtensionsHarness public certManagerExtensionsHarness;
 
     function setUp() public {
         harness = new Asn1DecodeHarness();
         certManagerHarness = new CertManagerHarness();
+        certManagerPubKeyHarness = new CertManagerPubKeyHarness();
+        certManagerExtensionsHarness = new CertManagerExtensionsHarness();
     }
 
     // 's' INTEGER from cabundle[3] (2026-04-02 attestation): DER-encoded with a 0x00
@@ -63,7 +95,7 @@ contract CertManagerTest is Test {
     }
 
     function test_BasicConstraintsEmptySequenceRejectsCACert() public {
-        vm.expectRevert("isCA must be true for CA certs");
+        vm.expectRevert(CertManager.InvalidBasicConstraints.selector);
         certManagerHarness.verifyBasicConstraints(hex"3000", true);
     }
 
@@ -76,23 +108,88 @@ contract CertManagerTest is Test {
     }
 
     function test_BasicConstraintsRejectsEmptyPathLen() public {
-        vm.expectRevert("invalid pathLenConstraint");
+        vm.expectRevert(CertManager.InvalidBasicConstraints.selector);
         certManagerHarness.verifyBasicConstraints(hex"30050101ff0200", true);
     }
 
     function test_BasicConstraintsRejectsOutOfBoundsChild() public {
-        vm.expectRevert("basicConstraints out of bounds");
+        vm.expectRevert(Asn1Decode.InvalidAsn1Length.selector);
         certManagerHarness.verifyBasicConstraints(hex"3003020200", false);
     }
 
     function test_BasicConstraintsRejectsTrailingFields() public {
-        vm.expectRevert("trailing basicConstraints fields");
+        vm.expectRevert(CertManager.InvalidBasicConstraints.selector);
         certManagerHarness.verifyBasicConstraints(hex"30090101ff020100020100", true);
     }
 
     function test_BasicConstraintsRejectsUnknownField() public {
-        vm.expectRevert("invalid basicConstraints field");
+        vm.expectRevert(CertManager.InvalidBasicConstraints.selector);
         certManagerHarness.verifyBasicConstraints(hex"30020400", false);
+    }
+
+    function test_ParsePubKeyAcceptsUncompressedP384Point() public view {
+        bytes memory pubKey = _patternBytes(96);
+        bytes memory spki = abi.encodePacked(hex"3076301006072a8648ce3d020106052b8104002203620004", pubKey);
+
+        assertEq(certManagerPubKeyHarness.parsePubKey(spki), pubKey);
+    }
+
+    function test_ParsePubKeyRejectsCompressedP384Point() public {
+        bytes memory compressedKey = _patternBytes(48);
+        bytes memory spki = abi.encodePacked(hex"3046301006072a8648ce3d020106052b8104002203320002", compressedKey);
+        bytes memory paddedCertificate = abi.encodePacked(new bytes(128), spki);
+
+        vm.expectRevert(CertManager.InvalidSubjectPublicKey.selector);
+        certManagerPubKeyHarness.parsePubKeyAt(paddedCertificate, 128, 130, 0x46);
+    }
+
+    function test_ParsePubKeyRejectsOversizedP384Point() public {
+        bytes memory oversizedKey = _patternBytes(97);
+        bytes memory spki = abi.encodePacked(hex"3077301006072a8648ce3d020106052b8104002203630004", oversizedKey);
+
+        vm.expectRevert(CertManager.InvalidSubjectPublicKey.selector);
+        certManagerPubKeyHarness.parsePubKey(spki);
+    }
+
+    function test_ParsePubKeyRejectsTruncatedP384Point() public {
+        bytes memory truncatedKey = _patternBytes(95);
+        bytes memory spki = abi.encodePacked(hex"3076301006072a8648ce3d020106052b8104002203620004", truncatedKey);
+
+        vm.expectRevert(Asn1Decode.InvalidAsn1Length.selector);
+        certManagerPubKeyHarness.parsePubKey(spki);
+    }
+
+    function test_ParsePubKeyRejectsMissingUncompressedPrefix() public {
+        bytes memory pubKey = _patternBytes(96);
+        bytes memory spki = abi.encodePacked(hex"3076301006072a8648ce3d020106052b8104002203620002", pubKey);
+
+        vm.expectRevert(CertManager.InvalidSubjectPublicKey.selector);
+        certManagerPubKeyHarness.parsePubKey(spki);
+    }
+
+    function test_VerifyExtensionsAllowsUnknownNonCriticalExtension() public view {
+        bytes memory unknownNameConstraints = hex"30090603551d1e04023000";
+
+        assertEq(
+            int256(certManagerExtensionsHarness.verifyExtensions(_clientExtensionsWith(unknownNameConstraints), false)),
+            -1
+        );
+    }
+
+    function test_VerifyExtensionsAllowsUnknownCriticalFalseExtension() public view {
+        bytes memory unknownNameConstraints = hex"300c0603551d1e01010004023000";
+
+        assertEq(
+            int256(certManagerExtensionsHarness.verifyExtensions(_clientExtensionsWith(unknownNameConstraints), false)),
+            -1
+        );
+    }
+
+    function test_VerifyExtensionsRejectsUnknownCriticalExtension() public {
+        bytes memory unknownNameConstraints = hex"300c0603551d1e0101ff04023000";
+
+        vm.expectRevert(CertManager.UnsupportedCriticalExtension.selector);
+        certManagerExtensionsHarness.verifyExtensions(_clientExtensionsWith(unknownNameConstraints), false);
     }
 
     // Cert chain from the 2026-04-02 ~15:35 UTC dev attestation that produced the live revert.
@@ -374,6 +471,23 @@ contract CertManagerTest is Test {
 
         return der;
     }
+
+    function _patternBytes(uint256 len) internal pure returns (bytes memory out) {
+        out = new bytes(len);
+        for (uint256 i = 0; i < len; i++) {
+            out[i] = bytes1(uint8(i + 1));
+        }
+    }
+
+    function _clientExtensionsWith(bytes memory extraExtension) internal pure returns (bytes memory) {
+        bytes memory body =
+            abi.encodePacked(hex"300c0603551d130101ff04023000", hex"300e0603551d0f0101ff040403020780", extraExtension);
+
+        return
+            abi.encodePacked(
+                bytes1(0xa3), bytes1(uint8(body.length + 2)), bytes1(0x30), bytes1(uint8(body.length)), body
+            );
+    }
 }
 
 /// @dev Exposes the internal revocation-chain walk and lets tests seed the `verifiedParent`
@@ -415,12 +529,61 @@ contract RequireCachedChainNotRevokedTest is Test {
         // verifiedParent[PARENT] is unset (bytes32(0)), so the chain is broken: it can never
         // reach ROOT_CA_CERT_HASH. The fixed function must fail closed instead of returning.
         cm.setParent(CHILD, PARENT);
-        vm.expectRevert("incomplete cert chain");
+        vm.expectRevert(CertManager.IncompleteCertChain.selector);
         cm.requireCachedChainNotRevoked(CHILD);
     }
 
     function test_RevertsOnZeroCertHash() public {
-        vm.expectRevert("incomplete cert chain");
+        vm.expectRevert(CertManager.IncompleteCertChain.selector);
         cm.requireCachedChainNotRevoked(bytes32(0));
+    }
+}
+
+/// @dev Regression coverage for BLOCKSEC-5249 finding I-02: `CertRevoked` / `CertUnrevoked` now
+///      include the acting `msg.sender` as an indexed topic so revocation activity is monitorable.
+contract CertRevocationEventTest is Test {
+    CertManager internal cm;
+
+    event CertRevoked(bytes32 indexed certHash, address indexed account);
+    event CertUnrevoked(bytes32 indexed certHash, address indexed account);
+
+    bytes32 internal constant CERT_ID = bytes32(uint256(0xabc));
+
+    function setUp() public {
+        // Deployer is both owner and revoker, so this contract can revoke/unrevoke directly.
+        cm = new CertManager(new P384Verifier());
+    }
+
+    function test_RevokeCertEmitsSender() public {
+        vm.expectEmit(true, true, false, true, address(cm));
+        emit CertRevoked(CERT_ID, address(this));
+        cm.revokeCert(CERT_ID);
+    }
+
+    function test_RevokeCertsEmitsSender() public {
+        bytes32[] memory ids = new bytes32[](1);
+        ids[0] = CERT_ID;
+        vm.expectEmit(true, true, false, true, address(cm));
+        emit CertRevoked(CERT_ID, address(this));
+        cm.revokeCerts(ids);
+    }
+
+    function test_UnrevokeCertEmitsSender() public {
+        cm.revokeCert(CERT_ID);
+        vm.expectEmit(true, true, false, true, address(cm));
+        emit CertUnrevoked(CERT_ID, address(this));
+        cm.unrevokeCert(CERT_ID);
+    }
+
+    /// @dev The recorded account is the actual caller, not the contract: a delegated revoker
+    ///      address shows up in the event topic.
+    function test_RevokeCertRecordsActualCaller() public {
+        address delegatedRevoker = address(0xBEEF);
+        cm.setRevoker(delegatedRevoker);
+
+        vm.expectEmit(true, true, false, true, address(cm));
+        emit CertRevoked(CERT_ID, delegatedRevoker);
+        vm.prank(delegatedRevoker);
+        cm.revokeCert(CERT_ID);
     }
 }
