@@ -58,6 +58,11 @@ library LibAsn1Ptr {
 }
 
 library Asn1Decode {
+    error InvalidAsn1Length();
+    error InvalidAsn1Type();
+    error InvalidAsn1Value();
+    error UnsupportedAsn1Tag();
+
     using LibAsn1Ptr for Asn1Ptr;
     using LibBytes for bytes;
 
@@ -97,7 +102,7 @@ library Asn1Decode {
      * @return A pointer to the first child node
      */
     function firstChildOf(bytes memory der, Asn1Ptr ptr) internal pure returns (Asn1Ptr) {
-        require(der[ptr.header()] & 0x20 == 0x20, "Not a constructed type");
+        if (der[ptr.header()] & 0x20 != 0x20) revert InvalidAsn1Type();
         return readNodeLength(der, ptr.content());
     }
 
@@ -108,9 +113,9 @@ library Asn1Decode {
      * @return A pointer to a bitstring
      */
     function bitstring(bytes memory der, Asn1Ptr ptr) internal pure returns (Asn1Ptr) {
-        require(der[ptr.header()] == 0x03, "Not type BIT STRING");
+        if (der[ptr.header()] != 0x03) revert InvalidAsn1Type();
         // Only 00 padded bitstr can be converted to bytestr!
-        require(der[ptr.content()] == 0x00, "Non-0-padded BIT STRING");
+        if (der[ptr.content()] != 0x00) revert InvalidAsn1Value();
         return LibAsn1Ptr.toAsn1Ptr(ptr.header(), ptr.content() + 1, ptr.length() - 1);
     }
 
@@ -122,22 +127,22 @@ library Asn1Decode {
      *         significant byte, so X.509 bit masks are stable across multi-octet encodings.
      */
     function bitstringUintAt(bytes memory der, Asn1Ptr ptr) internal pure returns (uint256) {
-        require(der[ptr.header()] == 0x03, "Not type BIT STRING");
-        require(ptr.length() > 0, "invalid BIT STRING length");
+        if (der[ptr.header()] != 0x03) revert InvalidAsn1Type();
+        if (ptr.length() == 0) revert InvalidAsn1Length();
 
         uint256 unusedBits = uint8(der[ptr.content()]);
-        require(unusedBits <= 7, "invalid BIT STRING padding");
+        if (unusedBits > 7) revert InvalidAsn1Value();
 
         uint256 len = ptr.length() - 1;
-        require(len <= 32, "BIT STRING too long");
+        if (len > 32) revert InvalidAsn1Length();
         if (len == 0) {
-            require(unusedBits == 0, "invalid BIT STRING padding");
+            if (unusedBits != 0) revert InvalidAsn1Value();
             return 0;
         }
 
         if (unusedBits != 0) {
             uint8 unusedMask = uint8((uint256(1) << unusedBits) - 1);
-            require(uint8(der[ptr.content() + len]) & unusedMask == 0, "Non-zero unused BIT STRING bits");
+            if (uint8(der[ptr.content() + len]) & unusedMask != 0) revert InvalidAsn1Value();
         }
 
         uint256 value;
@@ -154,7 +159,7 @@ library Asn1Decode {
      * @return A pointer to an octet string
      */
     function octetString(bytes memory der, Asn1Ptr ptr) internal pure returns (Asn1Ptr) {
-        require(der[ptr.header()] == 0x04, "Not type OCTET STRING");
+        if (der[ptr.header()] != 0x04) revert InvalidAsn1Type();
         return readNodeLength(der, ptr.content());
     }
 
@@ -165,8 +170,8 @@ library Asn1Decode {
      * @return Uint value of node
      */
     function uintAt(bytes memory der, Asn1Ptr ptr) internal pure returns (uint256) {
-        require(der[ptr.header()] == 0x02, "Not type INTEGER");
-        require(der[ptr.content()] & 0x80 == 0, "Not positive");
+        if (der[ptr.header()] != 0x02) revert InvalidAsn1Type();
+        if (der[ptr.content()] & 0x80 != 0) revert InvalidAsn1Value();
         uint256 len = ptr.length();
         return uint256(readBytesN(der, ptr.content(), len) >> (32 - len) * 8);
     }
@@ -178,8 +183,8 @@ library Asn1Decode {
      * @return 384-bit uint encoded in uint128 and uint256
      */
     function uint384At(bytes memory der, Asn1Ptr ptr) internal pure returns (uint128, uint256) {
-        require(der[ptr.header()] == 0x02, "Not type INTEGER");
-        require(der[ptr.content()] & 0x80 == 0, "Not positive");
+        if (der[ptr.header()] != 0x02) revert InvalidAsn1Type();
+        if (der[ptr.content()] & 0x80 != 0) revert InvalidAsn1Value();
         uint256 valueLength = ptr.length();
         uint256 start = ptr.content();
         if (der[start] == 0) {
@@ -205,12 +210,12 @@ library Asn1Decode {
         uint256 length = ptr.length();
 
         // content validation:
-        require((_type == 0x17 && length == 13) || (_type == 0x18 && length == 15), "Invalid TIMESTAMP");
-        require(der[offset + length - 1] == 0x5A, "TIMESTAMP must be UTC"); // 0x5A == 'Z'
+        if ((_type != 0x17 || length != 13) && (_type != 0x18 || length != 15)) revert InvalidAsn1Value();
+        if (der[offset + length - 1] != 0x5A) revert InvalidAsn1Value(); // 0x5A == 'Z'
         for (uint256 i = 0; i < length - 1; i++) {
             // all other characters must be digits between 0 and 9
             uint8 v = uint8(der[offset + i]);
-            require(48 <= v && v <= 57, "Invalid character in TIMESTAMP");
+            if (v < 48 || v > 57) revert InvalidAsn1Value();
         }
 
         uint16 _years;
@@ -231,7 +236,8 @@ library Asn1Decode {
     }
 
     function readNodeLength(bytes memory der, uint256 ix) private pure returns (Asn1Ptr) {
-        require(der[ix] & 0x1f != 0x1f, "ASN.1 tags longer than 1-byte are not supported");
+        if (ix + 1 >= der.length) revert InvalidAsn1Length();
+        if (der[ix] & 0x1f == 0x1f) revert UnsupportedAsn1Tag();
         uint256 length;
         uint256 ixFirstContentByte;
         if ((der[ix + 1] & 0x80) == 0) {
@@ -239,6 +245,10 @@ library Asn1Decode {
             ixFirstContentByte = ix + 2;
         } else {
             uint8 lengthbytesLength = uint8(der[ix + 1] & 0x7F);
+            if (lengthbytesLength == 0 || lengthbytesLength > 32 || ix + 2 + lengthbytesLength > der.length) {
+                revert InvalidAsn1Length();
+            }
+            if (der[ix + 2] == 0) revert InvalidAsn1Length();
             if (lengthbytesLength == 1) {
                 length = uint8(der[ix + 2]);
             } else if (lengthbytesLength == 2) {
@@ -247,8 +257,10 @@ library Asn1Decode {
                 length = uint256(readBytesN(der, ix + 2, lengthbytesLength) >> (32 - lengthbytesLength) * 8);
                 require(length <= 2 ** 64 - 1); // bound to max uint64 to be safe
             }
+            if (length < 128) revert InvalidAsn1Length();
             ixFirstContentByte = ix + 2 + lengthbytesLength;
         }
+        if (ixFirstContentByte + length > der.length) revert InvalidAsn1Length();
         return LibAsn1Ptr.toAsn1Ptr(ix, ixFirstContentByte, length);
     }
 
