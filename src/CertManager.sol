@@ -468,9 +468,10 @@ contract CertManager is ICertManager {
         returns (int64 maxPathLen)
     {
         if (certificate[extensionsPtr.header()] != 0xa3) revert InvalidExtension();
+        uint256 end = extensionsPtr.content() + extensionsPtr.length();
         extensionsPtr = certificate.firstChildOf(extensionsPtr);
         _requireAsn1Tag(certificate, extensionsPtr, 0x30);
-        uint256 end = extensionsPtr.content() + extensionsPtr.length();
+        if (extensionsPtr.content() + extensionsPtr.length() != end) revert InvalidExtension();
         Asn1Ptr extensionPtr = certificate.firstChildOf(extensionsPtr);
         bool basicConstraintsFound = false;
         bool keyUsageFound = false;

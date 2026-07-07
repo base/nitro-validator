@@ -32,18 +32,6 @@ contract CertManagerHarness is CertManager {
     }
 }
 
-contract CertManagerTbsHarness is CertManager {
-    using Asn1Decode for bytes;
-
-    constructor() CertManager(new P384Verifier()) {}
-
-    function parseTbs(bytes memory cert, bool ca) external view {
-        Asn1Ptr root = cert.root();
-        Asn1Ptr tbsPtr = cert.firstChildOf(root);
-        _parseTbs(cert, tbsPtr, ca);
-    }
-}
-
 contract CertManagerPubKeyHarness is CertManager {
     using Asn1Decode for bytes;
 
@@ -51,14 +39,6 @@ contract CertManagerPubKeyHarness is CertManager {
 
     function parsePubKey(bytes memory subjectPublicKeyInfo) external pure returns (bytes memory) {
         return _parsePubKey(subjectPublicKeyInfo, subjectPublicKeyInfo.root());
-    }
-
-    function parsePubKeyAt(bytes memory certificate, uint256 header, uint256 content, uint256 length)
-        external
-        pure
-        returns (bytes memory)
-    {
-        return _parsePubKey(certificate, LibAsn1Ptr.toAsn1Ptr(header, content, length));
     }
 }
 
@@ -79,14 +59,12 @@ contract CertManagerTest is Test {
 
     Asn1DecodeHarness public harness;
     CertManagerHarness public certManagerHarness;
-    CertManagerTbsHarness public certManagerTbsHarness;
     CertManagerPubKeyHarness public certManagerPubKeyHarness;
     CertManagerExtensionsHarness public certManagerExtensionsHarness;
 
     function setUp() public {
         harness = new Asn1DecodeHarness();
         certManagerHarness = new CertManagerHarness();
-        certManagerTbsHarness = new CertManagerTbsHarness();
         certManagerPubKeyHarness = new CertManagerPubKeyHarness();
         certManagerExtensionsHarness = new CertManagerExtensionsHarness();
     }
@@ -163,11 +141,29 @@ contract CertManagerTest is Test {
         );
     }
 
+    function test_ExtensionsRejectTrailingWrapperFields() public {
+        bytes memory inner = _derNode(0x30, bytes.concat(_basicConstraintsExtension(), _keyUsageExtension()));
+
+        vm.expectRevert(CertManager.InvalidExtension.selector);
+        certManagerExtensionsHarness.verifyExtensions(_derNode(0xa3, bytes.concat(inner, hex"0500")), true);
+    }
+
+    function test_ExtensionsRejectInnerSequencePastWrapper() public {
+        bytes memory inner = _derNode(0x30, bytes.concat(_basicConstraintsExtension(), _keyUsageExtension()));
+        bytes memory der = bytes.concat(bytes1(0xa3), bytes1(uint8(inner.length - 1)), inner);
+
+        vm.expectRevert(CertManager.InvalidExtension.selector);
+        certManagerExtensionsHarness.verifyExtensions(der, true);
+    }
+
     function test_ParseTbsRejectsTrailingSignedFields() public {
+        vm.warp(1775145600);
+        CertManager cm = new CertManager(new P384Verifier());
+
         bytes memory mutated = _appendTbsTrailingField(CB1);
 
         vm.expectRevert(Asn1Decode.InvalidAsn1Length.selector);
-        certManagerTbsHarness.parseTbs(mutated, true);
+        cm.verifyCACertWithHints(mutated, keccak256(CB0), "");
     }
 
     function test_ParsePubKeyAcceptsUncompressedP384Point() public view {
@@ -180,10 +176,9 @@ contract CertManagerTest is Test {
     function test_ParsePubKeyRejectsCompressedP384Point() public {
         bytes memory compressedKey = _patternBytes(48);
         bytes memory spki = abi.encodePacked(hex"3046301006072a8648ce3d020106052b8104002203320002", compressedKey);
-        bytes memory paddedCertificate = abi.encodePacked(new bytes(128), spki);
 
         vm.expectRevert(CertManager.InvalidSubjectPublicKey.selector);
-        certManagerPubKeyHarness.parsePubKeyAt(paddedCertificate, 128, 130, 0x46);
+        certManagerPubKeyHarness.parsePubKey(spki);
     }
 
     function test_ParsePubKeyRejectsOversizedP384Point() public {
