@@ -589,8 +589,15 @@ contract CertManager is ICertManager {
     function _certSignature(bytes memory certificate, Asn1Ptr sigPtr) internal pure returns (bytes memory sigPacked) {
         Asn1Ptr sigBPtr = certificate.bitstring(sigPtr);
         Asn1Ptr sigRoot = certificate.rootOf(sigBPtr);
+        _requireAsn1Tag(certificate, sigRoot, 0x30);
         Asn1Ptr sigRPtr = certificate.firstChildOf(sigRoot);
         Asn1Ptr sigSPtr = certificate.nextSiblingOf(sigRPtr);
+        if (
+            sigRoot.header() + sigRoot.totalLength() != sigBPtr.content() + sigBPtr.length()
+                || sigSPtr.header() + sigSPtr.totalLength() != sigRoot.content() + sigRoot.length()
+        ) {
+            revert InvalidAsn1Tag();
+        }
         (uint128 rhi, uint256 rlo) = certificate.uint384At(sigRPtr);
         (uint128 shi, uint256 slo) = certificate.uint384At(sigSPtr);
         sigPacked = abi.encodePacked(rhi, rlo, shi, slo);
