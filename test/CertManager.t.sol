@@ -30,10 +30,12 @@ contract CertManagerHarness is CertManager {
     function verifyBasicConstraints(bytes memory der, bool ca) external pure returns (int64) {
         return _verifyBasicConstraintsExtension(der, der.root(), ca);
     }
+}
 
-    function verifyExtensions(bytes memory der, bool ca) external pure returns (int64) {
-        return _verifyExtensions(der, der.root(), ca);
-    }
+contract CertManagerTbsHarness is CertManager {
+    using Asn1Decode for bytes;
+
+    constructor() CertManager(new P384Verifier()) {}
 
     function parseTbs(bytes memory cert, bool ca) external view {
         Asn1Ptr root = cert.root();
@@ -77,12 +79,14 @@ contract CertManagerTest is Test {
 
     Asn1DecodeHarness public harness;
     CertManagerHarness public certManagerHarness;
+    CertManagerTbsHarness public certManagerTbsHarness;
     CertManagerPubKeyHarness public certManagerPubKeyHarness;
     CertManagerExtensionsHarness public certManagerExtensionsHarness;
 
     function setUp() public {
         harness = new Asn1DecodeHarness();
         certManagerHarness = new CertManagerHarness();
+        certManagerTbsHarness = new CertManagerTbsHarness();
         certManagerPubKeyHarness = new CertManagerPubKeyHarness();
         certManagerExtensionsHarness = new CertManagerExtensionsHarness();
     }
@@ -138,23 +142,23 @@ contract CertManagerTest is Test {
     }
 
     function test_ExtensionsRejectDuplicateBasicConstraints() public {
-        vm.expectRevert("duplicate basicConstraints");
-        certManagerHarness.verifyExtensions(
+        vm.expectRevert(CertManager.InvalidExtension.selector);
+        certManagerExtensionsHarness.verifyExtensions(
             _extensions(bytes.concat(_basicConstraintsExtension(), _basicConstraintsExtension(), _keyUsageExtension())),
             true
         );
     }
 
     function test_ExtensionsRejectDuplicateKeyUsage() public {
-        vm.expectRevert("duplicate keyUsage");
-        certManagerHarness.verifyExtensions(
+        vm.expectRevert(CertManager.InvalidExtension.selector);
+        certManagerExtensionsHarness.verifyExtensions(
             _extensions(bytes.concat(_basicConstraintsExtension(), _keyUsageExtension(), _keyUsageExtension())), true
         );
     }
 
     function test_ExtensionsRejectTrailingExtensionFields() public {
-        vm.expectRevert("trailing extension fields");
-        certManagerHarness.verifyExtensions(
+        vm.expectRevert(CertManager.InvalidExtension.selector);
+        certManagerExtensionsHarness.verifyExtensions(
             _extensions(bytes.concat(_basicConstraintsExtensionWithTrailingField(), _keyUsageExtension())), true
         );
     }
@@ -162,8 +166,8 @@ contract CertManagerTest is Test {
     function test_ParseTbsRejectsTrailingSignedFields() public {
         bytes memory mutated = _appendTbsTrailingField(CB1);
 
-        vm.expectRevert("trailing tbs fields");
-        certManagerHarness.parseTbs(mutated, true);
+        vm.expectRevert(Asn1Decode.InvalidAsn1Length.selector);
+        certManagerTbsHarness.parseTbs(mutated, true);
     }
 
     function test_ParsePubKeyAcceptsUncompressedP384Point() public view {
@@ -300,6 +304,35 @@ contract CertManagerTest is Test {
 
         vm.expectRevert("root cert alias");
         cm.verifyCACertWithHints(rootTwin, rootHash, hints);
+    }
+
+    function test_VerifyCACertWithHints_RejectsOuterTagSubstitution() public {
+        vm.warp(1775145600);
+        CertManager cm = new CertManager(new P384Verifier());
+
+        bytes32 rootHash = keccak256(CB0);
+        bytes memory mutated = bytes.concat(CB1);
+        mutated[0] = 0x31; // constructed SET with the same children is not an X.509 Certificate SEQUENCE.
+
+        vm.expectRevert(CertManager.InvalidAsn1Tag.selector);
+        cm.verifyCACertWithHints(mutated, rootHash, "");
+    }
+
+    function test_VerifyCACertWithHints_RejectsTbsAlgorithmTagSubstitution() public {
+        vm.warp(1775145600);
+        CertManager cm = new CertManager(new P384Verifier());
+
+        bytes32 rootHash = keccak256(CB0);
+        bytes memory mutated = bytes.concat(CB1);
+        Asn1Ptr root = mutated.root();
+        Asn1Ptr tbsPtr = mutated.firstChildOf(root);
+        Asn1Ptr versionPtr = mutated.firstChildOf(tbsPtr);
+        Asn1Ptr serialPtr = mutated.nextSiblingOf(versionPtr);
+        Asn1Ptr sigAlgoPtr = mutated.nextSiblingOf(serialPtr);
+        mutated[sigAlgoPtr.header()] = 0x31; // constructed, but not AlgorithmIdentifier SEQUENCE.
+
+        vm.expectRevert(CertManager.InvalidAsn1Tag.selector);
+        cm.verifyCACertWithHints(mutated, rootHash, "");
     }
 
     function _verifyCA(CertManager cm, P384HintCollector collector, bytes memory cert, bytes32 parentHash)
