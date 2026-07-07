@@ -308,7 +308,7 @@ contract CertManager is ICertManager {
 
         Asn1Ptr root = certificate.root();
         _requireAsn1Tag(certificate, root, 0x30);
-        require(root.totalLength() == certificate.length, "invalid cert length");
+        if (root.totalLength() != certificate.length) revert Asn1Decode.InvalidAsn1Length();
         Asn1Ptr tbsCertPtr = certificate.firstChildOf(root);
         _requireAsn1Tag(certificate, tbsCertPtr, 0x30);
         return certificate.keccak(tbsCertPtr.header(), tbsCertPtr.totalLength());
@@ -331,7 +331,7 @@ contract CertManager is ICertManager {
         bytes memory signatureHints
     ) internal view returns (VerifiedCert memory cert, bytes32 identity) {
         Asn1Ptr root = certificate.root();
-        require(root.totalLength() == certificate.length, "invalid cert length");
+        if (root.totalLength() != certificate.length) revert Asn1Decode.InvalidAsn1Length();
         Asn1Ptr tbsCertPtr = certificate.firstChildOf(root);
         (uint64 notAfter, int64 maxPathLen, bytes32 issuerHash, bytes32 subjectHash, bytes memory pubKey) =
             _parseTbs(certificate, tbsCertPtr, ca);
@@ -372,27 +372,20 @@ contract CertManager is ICertManager {
         view
         returns (uint64 notAfter, int64 maxPathLen, bytes32 issuerHash, bytes32 subjectHash, bytes memory pubKey)
     {
-        Asn1Ptr sigAlgoPtr = _verifyTbsHeader(certificate, ptr);
-
-        (notAfter, maxPathLen, issuerHash, subjectHash, pubKey) =
-            _parseTbsInner(certificate, sigAlgoPtr, ca, ptr.content() + ptr.length());
-    }
-
-    function _verifyTbsHeader(bytes memory certificate, Asn1Ptr ptr) internal pure returns (Asn1Ptr sigAlgoPtr) {
         _requireAsn1Tag(certificate, ptr, 0x30);
         Asn1Ptr versionPtr = certificate.firstChildOf(ptr);
         _requireAsn1Tag(certificate, versionPtr, 0xa0);
-        Asn1Ptr vPtr = certificate.firstChildOf(versionPtr);
-        Asn1Ptr serialPtr = certificate.nextSiblingOf(versionPtr);
-        sigAlgoPtr = certificate.nextSiblingOf(serialPtr);
+        Asn1Ptr sigAlgoPtr = certificate.nextSiblingOf(certificate.nextSiblingOf(versionPtr));
         _requireAsn1Tag(certificate, sigAlgoPtr, 0x30);
 
         if (certificate.keccak(sigAlgoPtr.content(), sigAlgoPtr.length()) != CERT_ALGO_OID) {
             revert InvalidCertAlgorithm();
         }
-        uint256 version = certificate.uintAt(vPtr);
         // as extensions are used in cert, version should be 3 (value 2) as per https://datatracker.ietf.org/doc/html/rfc5280#section-4.1.2.1
-        if (version != 2) revert InvalidCertVersion();
+        if (certificate.uintAt(certificate.firstChildOf(versionPtr)) != 2) revert InvalidCertVersion();
+
+        (notAfter, maxPathLen, issuerHash, subjectHash, pubKey) =
+            _parseTbsInner(certificate, sigAlgoPtr, ca, ptr.content() + ptr.length());
     }
 
     function _parseTbsInner(bytes memory certificate, Asn1Ptr sigAlgoPtr, bool ca, uint256 tbsEnd)
@@ -420,7 +413,7 @@ contract CertManager is ICertManager {
             // skip optional subjectUniqueID
             extensionsPtr = certificate.nextSiblingOf(extensionsPtr);
         }
-        if (_requireAsn1NodeWithin(extensionsPtr, tbsEnd) != tbsEnd) revert Asn1Decode.InvalidAsn1Length();
+        if (extensionsPtr.content() + extensionsPtr.length() != tbsEnd) revert Asn1Decode.InvalidAsn1Length();
 
         notAfter = _verifyValidity(certificate, validityPtr);
         maxPathLen = _verifyExtensions(certificate, extensionsPtr, ca);
@@ -484,21 +477,22 @@ contract CertManager is ICertManager {
         maxPathLen = -1;
 
         while (true) {
-            uint256 extensionEnd = _requireAsn1NodeWithin(extensionPtr, end);
+            uint256 extensionEnd = extensionPtr.content() + extensionPtr.length();
+            if (extensionEnd > end) revert InvalidExtension();
             _requireAsn1Tag(certificate, extensionPtr, 0x30);
             Asn1Ptr oidPtr = certificate.firstChildOf(extensionPtr);
             bytes32 oid = certificate.keccak(oidPtr.content(), oidPtr.length());
             bool recognized = oid == BASIC_CONSTRAINTS_OID || oid == KEY_USAGE_OID;
 
-            Asn1Ptr valuePtr = _nextSiblingWithin(certificate, oidPtr, extensionEnd);
+            Asn1Ptr valuePtr = certificate.nextSiblingOf(oidPtr);
 
             if (certificate[valuePtr.header()] == 0x01) {
                 if (valuePtr.length() != 1) revert InvalidExtension();
                 if (!recognized && certificate[valuePtr.content()] != 0x00) revert UnsupportedCriticalExtension();
-                valuePtr = _nextSiblingWithin(certificate, valuePtr, extensionEnd);
+                valuePtr = certificate.nextSiblingOf(valuePtr);
             }
 
-            if (_requireAsn1NodeWithin(valuePtr, extensionEnd) != extensionEnd) revert InvalidExtension();
+            if (valuePtr.content() + valuePtr.length() != extensionEnd) revert InvalidExtension();
 
             if (recognized) {
                 valuePtr = certificate.octetString(valuePtr);
@@ -517,7 +511,7 @@ contract CertManager is ICertManager {
             if (extensionEnd == end) {
                 break;
             }
-            extensionPtr = _nextSiblingWithin(certificate, extensionPtr, end);
+            extensionPtr = certificate.nextSiblingOf(extensionPtr);
         }
 
         if (!basicConstraintsFound || !keyUsageFound || (!ca && maxPathLen != -1)) revert InvalidExtension();
@@ -573,28 +567,14 @@ contract CertManager is ICertManager {
         if (childEnd > parentEnd) revert InvalidBasicConstraints();
     }
 
-    function _requireAsn1NodeWithin(Asn1Ptr ptr, uint256 parentEnd) internal pure returns (uint256 nodeEnd) {
-        nodeEnd = ptr.header() + ptr.totalLength();
-        if (nodeEnd > parentEnd) revert Asn1Decode.InvalidAsn1Length();
-    }
-
-    function _nextSiblingWithin(bytes memory der, Asn1Ptr ptr, uint256 parentEnd)
-        internal
-        pure
-        returns (Asn1Ptr sibling)
-    {
-        sibling = der.nextSiblingOf(ptr);
-        _requireAsn1NodeWithin(sibling, parentEnd);
-    }
-
     function _verifyKeyUsageExtension(bytes memory certificate, Asn1Ptr valuePtr, bool ca) internal pure {
         uint256 value = certificate.bitstringUintAt(valuePtr);
         // X.509 KeyUsage bits are MSB-first. bitstringUintAt keeps the first KeyUsage octet in the
         // low byte, so these masks continue to target the same bits for one- or multi-octet values.
         if (ca) {
-            require(value & 0x04 == 0x04, "CertSign must be present");
+            if (value & 0x04 != 0x04) revert InvalidExtension();
         } else {
-            require(value & 0x80 == 0x80, "DigitalSignature must be present");
+            if (value & 0x80 != 0x80) revert InvalidExtension();
         }
     }
 
@@ -610,7 +590,7 @@ contract CertManager is ICertManager {
             revert InvalidCertAlgorithm();
         }
         Asn1Ptr sigPtr = certificate.nextSiblingOf(sigAlgoPtr);
-        require(sigPtr.header() + sigPtr.totalLength() == certificate.length, "trailing cert fields");
+        if (sigPtr.header() + sigPtr.totalLength() != certificate.length) revert Asn1Decode.InvalidAsn1Length();
 
         bytes memory hash = Sha2Ext.sha384(certificate, ptr.header(), ptr.totalLength());
         bytes memory sigPacked = _certSignature(certificate, sigPtr);
@@ -621,8 +601,15 @@ contract CertManager is ICertManager {
     function _certSignature(bytes memory certificate, Asn1Ptr sigPtr) internal pure returns (bytes memory sigPacked) {
         Asn1Ptr sigBPtr = certificate.bitstring(sigPtr);
         Asn1Ptr sigRoot = certificate.rootOf(sigBPtr);
+        _requireAsn1Tag(certificate, sigRoot, 0x30);
         Asn1Ptr sigRPtr = certificate.firstChildOf(sigRoot);
         Asn1Ptr sigSPtr = certificate.nextSiblingOf(sigRPtr);
+        if (
+            sigRoot.header() + sigRoot.totalLength() != sigBPtr.content() + sigBPtr.length()
+                || sigSPtr.header() + sigSPtr.totalLength() != sigRoot.content() + sigRoot.length()
+        ) {
+            revert InvalidAsn1Tag();
+        }
         (uint128 rhi, uint256 rlo) = certificate.uint384At(sigRPtr);
         (uint128 shi, uint256 slo) = certificate.uint384At(sigSPtr);
         sigPacked = abi.encodePacked(rhi, rlo, shi, slo);
