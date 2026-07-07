@@ -40,14 +40,6 @@ contract CertManagerPubKeyHarness is CertManager {
     function parsePubKey(bytes memory subjectPublicKeyInfo) external pure returns (bytes memory) {
         return _parsePubKey(subjectPublicKeyInfo, subjectPublicKeyInfo.root());
     }
-
-    function parsePubKeyAt(bytes memory certificate, uint256 header, uint256 content, uint256 length)
-        external
-        pure
-        returns (bytes memory)
-    {
-        return _parsePubKey(certificate, LibAsn1Ptr.toAsn1Ptr(header, content, length));
-    }
 }
 
 contract CertManagerExtensionsHarness is CertManager {
@@ -127,6 +119,53 @@ contract CertManagerTest is Test {
         certManagerHarness.verifyBasicConstraints(hex"30020400", false);
     }
 
+    function test_ExtensionsRejectDuplicateBasicConstraints() public {
+        vm.expectRevert(CertManager.InvalidExtension.selector);
+        certManagerExtensionsHarness.verifyExtensions(
+            _extensions(bytes.concat(_basicConstraintsExtension(), _basicConstraintsExtension(), _keyUsageExtension())),
+            true
+        );
+    }
+
+    function test_ExtensionsRejectDuplicateKeyUsage() public {
+        vm.expectRevert(CertManager.InvalidExtension.selector);
+        certManagerExtensionsHarness.verifyExtensions(
+            _extensions(bytes.concat(_basicConstraintsExtension(), _keyUsageExtension(), _keyUsageExtension())), true
+        );
+    }
+
+    function test_ExtensionsRejectTrailingExtensionFields() public {
+        vm.expectRevert(CertManager.InvalidExtension.selector);
+        certManagerExtensionsHarness.verifyExtensions(
+            _extensions(bytes.concat(_basicConstraintsExtensionWithTrailingField(), _keyUsageExtension())), true
+        );
+    }
+
+    function test_ExtensionsRejectTrailingWrapperFields() public {
+        bytes memory inner = _derNode(0x30, bytes.concat(_basicConstraintsExtension(), _keyUsageExtension()));
+
+        vm.expectRevert(CertManager.InvalidExtension.selector);
+        certManagerExtensionsHarness.verifyExtensions(_derNode(0xa3, bytes.concat(inner, hex"0500")), true);
+    }
+
+    function test_ExtensionsRejectInnerSequencePastWrapper() public {
+        bytes memory inner = _derNode(0x30, bytes.concat(_basicConstraintsExtension(), _keyUsageExtension()));
+        bytes memory der = bytes.concat(bytes1(0xa3), bytes1(uint8(inner.length - 1)), inner);
+
+        vm.expectRevert(CertManager.InvalidExtension.selector);
+        certManagerExtensionsHarness.verifyExtensions(der, true);
+    }
+
+    function test_ParseTbsRejectsTrailingSignedFields() public {
+        vm.warp(1775145600);
+        CertManager cm = new CertManager(new P384Verifier());
+
+        bytes memory mutated = _appendTbsTrailingField(CB1);
+
+        vm.expectRevert(Asn1Decode.InvalidAsn1Length.selector);
+        cm.verifyCACertWithHints(mutated, keccak256(CB0), "");
+    }
+
     function test_ParsePubKeyAcceptsUncompressedP384Point() public view {
         bytes memory pubKey = _patternBytes(96);
         bytes memory spki = abi.encodePacked(hex"3076301006072a8648ce3d020106052b8104002203620004", pubKey);
@@ -137,10 +176,9 @@ contract CertManagerTest is Test {
     function test_ParsePubKeyRejectsCompressedP384Point() public {
         bytes memory compressedKey = _patternBytes(48);
         bytes memory spki = abi.encodePacked(hex"3046301006072a8648ce3d020106052b8104002203320002", compressedKey);
-        bytes memory paddedCertificate = abi.encodePacked(new bytes(128), spki);
 
         vm.expectRevert(CertManager.InvalidSubjectPublicKey.selector);
-        certManagerPubKeyHarness.parsePubKeyAt(paddedCertificate, 128, 130, 0x46);
+        certManagerPubKeyHarness.parsePubKey(spki);
     }
 
     function test_ParsePubKeyRejectsOversizedP384Point() public {
@@ -370,6 +408,17 @@ contract CertManagerTest is Test {
         _writeDerLength(result, sigRoot, _addDelta(sigRoot.length(), delta));
     }
 
+    function _appendTbsTrailingField(bytes memory certificate) internal pure returns (bytes memory result) {
+        Asn1Ptr root = certificate.root();
+        Asn1Ptr tbsPtr = certificate.firstChildOf(root);
+        bytes memory nullField = hex"0500";
+        int256 delta = int256(nullField.length);
+        result = _insertBytes(certificate, tbsPtr.content() + tbsPtr.length(), nullField);
+
+        _writeDerLength(result, root, _addDelta(root.length(), delta));
+        _writeDerLength(result, tbsPtr, _addDelta(tbsPtr.length(), delta));
+    }
+
     function _appendSignatureTrailingField(bytes memory certificate) internal pure returns (bytes memory result) {
         (Asn1Ptr root, Asn1Ptr sigPtr, Asn1Ptr sigRoot,) = _certSignaturePtrs(certificate);
         bytes memory extraInteger = hex"020100";
@@ -395,6 +444,33 @@ contract CertManagerTest is Test {
         }
         for (uint256 i = offset; i < input.length; ++i) {
             result[i + inserted.length] = input[i];
+        }
+    }
+
+    function _extensions(bytes memory extensionList) internal pure returns (bytes memory) {
+        return _derNode(0xa3, _derNode(0x30, extensionList));
+    }
+
+    function _basicConstraintsExtension() internal pure returns (bytes memory) {
+        return _derNode(0x30, bytes.concat(hex"0603551d13", hex"0101ff", _derNode(0x04, hex"30060101ff020100")));
+    }
+
+    function _basicConstraintsExtensionWithTrailingField() internal pure returns (bytes memory) {
+        return
+            _derNode(0x30, bytes.concat(hex"0603551d13", hex"0101ff", _derNode(0x04, hex"30060101ff020100"), hex"0500"));
+    }
+
+    function _keyUsageExtension() internal pure returns (bytes memory) {
+        return _derNode(0x30, bytes.concat(hex"0603551d0f", hex"0101ff", _derNode(0x04, hex"03020186")));
+    }
+
+    function _derNode(bytes1 tag, bytes memory content) internal pure returns (bytes memory der) {
+        require(content.length < 128, "test: long-form length not supported");
+        der = new bytes(2 + content.length);
+        der[0] = tag;
+        der[1] = bytes1(uint8(content.length));
+        for (uint256 i = 0; i < content.length; ++i) {
+            der[2 + i] = content[i];
         }
     }
 

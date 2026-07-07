@@ -479,7 +479,7 @@ contract HintedNitroAttestationTest is Test {
         NitroValidator.Ptrs memory ptrs = parser.parseAttestation(attestationTbs);
         (bytes memory caCert, bytes32 parentHash,) = _firstNonRootCA(attestationTbs, ptrs);
 
-        vm.expectRevert("invalid cert length");
+        vm.expectRevert(Asn1Decode.InvalidAsn1Length.selector);
         certManager.verifyCACertWithHints(abi.encodePacked(caCert, bytes1(0x00)), parentHash, "");
     }
 
@@ -511,7 +511,7 @@ contract HintedNitroAttestationTest is Test {
         bytes memory shadowRootHints =
             hintCollector.collectCertSignatureHints(shadowRoot, certManager.loadVerified(rootHash).pubKey);
 
-        vm.expectRevert("invalid cert length");
+        vm.expectRevert(Asn1Decode.InvalidAsn1Length.selector);
         certManager.verifyCACertWithHints(shadowRoot, rootHash, shadowRootHints);
         assertEq(certManager.loadVerified(shadowRootHash).pubKey.length, 0, "shadow root must not cache");
 
@@ -525,7 +525,7 @@ contract HintedNitroAttestationTest is Test {
         NitroValidator.Ptrs memory ptrs = parser.parseAttestation(attestationTbs);
         (bytes memory caCert, bytes32 parentHash,) = _firstNonRootCA(attestationTbs, ptrs);
 
-        vm.expectRevert("trailing cert fields");
+        vm.expectRevert(Asn1Decode.InvalidAsn1Length.selector);
         certManager.verifyCACertWithHints(_appendInsideOuterSequence(caCert, bytes1(0x00)), parentHash, "");
     }
 
