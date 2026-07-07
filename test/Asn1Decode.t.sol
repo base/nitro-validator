@@ -20,6 +20,10 @@ contract Asn1Harness {
         return der.uintAt(der.root());
     }
 
+    function uint384AtRoot(bytes memory der) external pure returns (uint128 hi, uint256 lo) {
+        return der.uint384At(der.root());
+    }
+
     function timestampAtRoot(bytes memory der) external pure returns (uint256) {
         return der.timestampAt(der.root());
     }
@@ -90,6 +94,20 @@ contract Asn1DecodeTest is Test {
         assertEq(h.uintAtRoot(hex"0203012345"), 0x012345); // INTEGER 0x012345
     }
 
+    function test_uintAt_requiredLeadingZero() public view {
+        assertEq(h.uintAtRoot(hex"02020080"), 0x80);
+    }
+
+    function test_uintAt_unnecessaryLeadingZero_reverts() public {
+        vm.expectRevert(Asn1Decode.InvalidAsn1Value.selector);
+        h.uintAtRoot(hex"0202007f");
+    }
+
+    function test_uintAt_empty_reverts() public {
+        vm.expectRevert(Asn1Decode.InvalidAsn1Length.selector);
+        h.uintAtRoot(hex"0200");
+    }
+
     function test_uintAt_notInteger_reverts() public {
         vm.expectRevert(Asn1Decode.InvalidAsn1Type.selector);
         h.uintAtRoot(hex"0401ff"); // OCTET STRING, not INTEGER
@@ -104,6 +122,22 @@ contract Asn1DecodeTest is Test {
     function test_uintAt_lengthPastBuffer_reverts() public {
         vm.expectRevert(); // require(idx + len <= self.length) has no message
         h.uintAtRoot(hex"02050000"); // claims 5 content bytes, only 2 present
+    }
+
+    function test_uint384At_requiredLeadingZero() public view {
+        (uint128 hi, uint256 lo) = h.uint384AtRoot(hex"02020080");
+        assertEq(hi, 0);
+        assertEq(lo, 0x80);
+    }
+
+    function test_uint384At_unnecessaryLeadingZero_reverts() public {
+        vm.expectRevert(Asn1Decode.InvalidAsn1Value.selector);
+        h.uint384AtRoot(hex"0202007f");
+    }
+
+    function test_uint384At_empty_reverts() public {
+        vm.expectRevert(Asn1Decode.InvalidAsn1Length.selector);
+        h.uint384AtRoot(hex"0200");
     }
 
     // --- timestampAt ---
@@ -209,9 +243,34 @@ contract Asn1DecodeTest is Test {
     }
 
     function testFuzz_uintAt_positive(uint64 v) public view {
-        // INTEGER with an explicit 0x00 sign byte so the value is always positive
-        bytes memory der = abi.encodePacked(bytes1(0x02), bytes1(0x09), bytes1(0x00), bytes8(v));
+        bytes memory der = _derEncodeUint64(v);
         assertEq(h.uintAtRoot(der), v);
+    }
+
+    function _derEncodeUint64(uint64 v) internal pure returns (bytes memory) {
+        if (v == 0) {
+            return hex"020100";
+        }
+
+        bytes8 raw = bytes8(v);
+        uint256 offset;
+        while (offset < 8 && raw[offset] == 0) {
+            offset++;
+        }
+
+        uint256 len = 8 - offset;
+        bool needsPad = uint8(raw[offset]) >= 0x80;
+        bytes memory der = new bytes(2 + len + (needsPad ? 1 : 0));
+        der[0] = 0x02;
+        der[1] = bytes1(uint8(der.length - 2));
+        uint256 dst = 2;
+        if (needsPad) {
+            der[dst++] = 0x00;
+        }
+        for (uint256 i = offset; i < 8; ++i) {
+            der[dst++] = raw[i];
+        }
+        return der;
     }
 
     function _utcTime(string memory s) internal pure returns (bytes memory) {
