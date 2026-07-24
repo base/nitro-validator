@@ -244,6 +244,9 @@ contract CertManager is ICertManager {
     function _requireCachedChainNotRevoked(bytes32 certHash) internal view {
         while (certHash != bytes32(0)) {
             _requireNotRevoked(_revocationKey(certHash));
+            VerifiedCert memory cert = _loadVerified(certHash);
+            if (cert.pubKey.length == 0) revert IncompleteCertChain();
+            require(!_certificateExpired(cert.notAfter), "cert expired");
             if (certHash == ROOT_CA_CERT_HASH) {
                 return;
             }
@@ -267,7 +270,6 @@ contract CertManager is ICertManager {
             parent = _loadVerified(parentCertHash);
             require(parent.pubKey.length > 0, "parent cert unverified");
             _requireCachedChainNotRevoked(parentCertHash);
-            require(!_certificateExpired(parent.notAfter), "parent cert expired");
             require(parent.ca, "parent cert is not a CA");
             require(!ca || parent.maxPathLen != 0, "maxPathLen exceeded");
         }

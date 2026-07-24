@@ -635,6 +635,13 @@ contract RevocationChainHarness is CertManager {
         verifiedParent[child] = parent;
     }
 
+    function setCachedCert(bytes32 certHash, uint64 notAfter) external {
+        _saveVerified(
+            certHash,
+            VerifiedCert({ca: true, notAfter: notAfter, maxPathLen: -1, subjectHash: bytes32(0), pubKey: new bytes(96)})
+        );
+    }
+
     function requireCachedChainNotRevoked(bytes32 certHash) external view {
         _requireCachedChainNotRevoked(certHash);
     }
@@ -655,15 +662,34 @@ contract RequireCachedChainNotRevokedTest is Test {
 
     function test_PassesWhenChainReachesPinnedRoot() public {
         bytes32 root = cm.ROOT_CA_CERT_HASH();
+        cm.setCachedCert(CHILD, type(uint64).max);
+        cm.setCachedCert(PARENT, type(uint64).max);
         cm.setParent(CHILD, PARENT);
         cm.setParent(PARENT, root);
         // Walks CHILD -> PARENT -> ROOT and returns without reverting.
         cm.requireCachedChainNotRevoked(CHILD);
     }
 
+    function test_RevertsWhenCachedGrandparentIsExpired() public {
+        vm.warp(1000);
+        bytes32 grandparent = bytes32(uint256(3));
+
+        cm.setCachedCert(CHILD, 2000);
+        cm.setCachedCert(PARENT, 2000);
+        cm.setCachedCert(grandparent, 999);
+        cm.setParent(CHILD, PARENT);
+        cm.setParent(PARENT, grandparent);
+        cm.setParent(grandparent, cm.ROOT_CA_CERT_HASH());
+
+        vm.expectRevert("cert expired");
+        cm.requireCachedChainNotRevoked(CHILD);
+    }
+
     function test_RevertsWhenChainDoesNotReachRoot() public {
         // verifiedParent[PARENT] is unset (bytes32(0)), so the chain is broken: it can never
         // reach ROOT_CA_CERT_HASH. The fixed function must fail closed instead of returning.
+        cm.setCachedCert(CHILD, type(uint64).max);
+        cm.setCachedCert(PARENT, type(uint64).max);
         cm.setParent(CHILD, PARENT);
         vm.expectRevert(CertManager.IncompleteCertChain.selector);
         cm.requireCachedChainNotRevoked(CHILD);
