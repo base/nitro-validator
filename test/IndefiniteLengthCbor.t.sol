@@ -34,8 +34,8 @@ uint8 constant CBOR_MAP_AI30 = 0xbe;
 uint256 constant SYNTH_MODULE_ID_LEN = 4; // "test"
 uint256 constant SYNTH_DIGEST_LEN = 6; // "SHA384"
 uint64 constant SYNTH_TIMESTAMP = 1_000_000;
-uint256 constant SYNTH_PCRS_COUNT = 1;
 uint256 constant SYNTH_PCR_LEN = 48;
+uint256 constant PCR_BANK_SIZE = 32;
 uint256 constant SYNTH_CERT_LEN = 4;
 uint256 constant SYNTH_CABUNDLE_COUNT = 1;
 uint256 constant SYNTH_CABUNDLE_CERT_LEN = 4;
@@ -364,8 +364,9 @@ contract NitroValidatorIndefiniteLengthTest is Test {
         assertEq(p.moduleID.length(), SYNTH_MODULE_ID_LEN, "module_id length");
         assertEq(p.timestamp, SYNTH_TIMESTAMP, "timestamp");
         assertEq(p.digest.length(), SYNTH_DIGEST_LEN, "digest length");
-        assertEq(p.pcrs.length, SYNTH_PCRS_COUNT, "pcrs count");
+        assertEq(p.pcrs.length, PCR_BANK_SIZE, "pcr bank size");
         assertEq(p.pcrs[0].length(), SYNTH_PCR_LEN, "pcr[0] length");
+        assertTrue(p.pcrs[1].isNull(), "pcr[1] absent");
         assertEq(p.cert.length(), SYNTH_CERT_LEN, "cert length");
         assertEq(p.cabundle.length, SYNTH_CABUNDLE_COUNT, "cabundle count");
         assertEq(p.cabundle[0].length(), SYNTH_CABUNDLE_CERT_LEN, "cabundle[0] length");
@@ -379,10 +380,11 @@ contract NitroValidatorIndefiniteLengthTest is Test {
         assertEq(p.moduleID.length(), REAL_MODULE_ID_LEN, "module_id length");
         assertGt(p.timestamp, 0, "timestamp > 0");
         assertEq(p.digest.length(), REAL_DIGEST_LEN, "digest length");
-        assertEq(p.pcrs.length, REAL_PCRS_COUNT, "pcrs count");
+        assertEq(p.pcrs.length, PCR_BANK_SIZE, "pcr bank size");
         for (uint256 i = 0; i < REAL_PCRS_COUNT; i++) {
             assertEq(p.pcrs[i].length(), REAL_PCR_LEN, "pcr length");
         }
+        assertTrue(p.pcrs[REAL_PCRS_COUNT].isNull(), "next PCR absent");
         assertEq(p.cert.length(), REAL_CERT_LEN, "cert length");
         assertEq(p.cabundle.length, REAL_CABUNDLE_COUNT, "cabundle count");
         // public_key is NON-null in this real attestation
@@ -596,9 +598,8 @@ contract NitroValidatorIndefiniteLengthTest is Test {
     //  EDGE CASES
     // ══════════════════════════════════════════════════════════
 
-    /// @dev Empty indefinite-length map (0xBF 0xFF): returns zero-initialised
-    ///      Ptrs without reverting.  Downstream validateAttestation() would
-    ///      catch missing required fields.
+    /// @dev Empty indefinite-length map (0xBF 0xFF): returns unset Ptrs without reverting. The PCR
+    ///      bank is still initialized, and downstream validation catches missing required fields.
     function test_edge_emptyIndefiniteLengthMap() public view {
         bytes memory tbs = _buildTbs(abi.encodePacked(CBOR_MAP_INDEFINITE, CBOR_BREAK));
 
@@ -606,7 +607,8 @@ contract NitroValidatorIndefiniteLengthTest is Test {
 
         assertEq(p.moduleID.length(), 0, "module_id unset");
         assertEq(p.timestamp, 0, "timestamp unset");
-        assertEq(p.pcrs.length, 0, "pcrs unset");
+        assertEq(p.pcrs.length, PCR_BANK_SIZE, "pcr bank initialized");
+        assertTrue(p.pcrs[0].isNull(), "pcrs unset");
         assertEq(p.cabundle.length, 0, "cabundle unset");
     }
 
@@ -620,9 +622,10 @@ contract NitroValidatorIndefiniteLengthTest is Test {
         // Parsed entries
         assertEq(p.moduleID.length(), SYNTH_MODULE_ID_LEN, "module_id parsed");
         assertEq(p.digest.length(), SYNTH_DIGEST_LEN, "digest parsed");
-        // Unparsed entries remain zero-initialised
+        // Unparsed scalar entries remain zero-initialised; the PCR bank remains null-initialized.
         assertEq(p.timestamp, 0, "timestamp not parsed");
-        assertEq(p.pcrs.length, 0, "pcrs not parsed");
+        assertEq(p.pcrs.length, PCR_BANK_SIZE, "pcr bank initialized");
+        assertTrue(p.pcrs[0].isNull(), "pcrs not parsed");
         assertEq(p.cert.length(), 0, "cert not parsed");
         assertEq(p.cabundle.length, 0, "cabundle not parsed");
     }
@@ -722,7 +725,8 @@ contract NitroValidatorIndefiniteLengthTest is Test {
         assertEq(p.timestamp, SYNTH_TIMESTAMP, "timestamp parsed");
 
         // pcrs: empty (indefinite-length map with no entries)
-        assertEq(p.pcrs.length, 0, "pcrs empty");
+        assertEq(p.pcrs.length, PCR_BANK_SIZE, "pcr bank size");
+        assertTrue(p.pcrs[0].isNull(), "pcrs empty");
 
         // Fields after pcrs: now parsed — the inner break is consumed, not leaked
         assertEq(p.cert.length(), SYNTH_CERT_LEN, "cert parsed");
@@ -769,9 +773,10 @@ contract NitroValidatorIndefiniteLengthTest is Test {
         bytes memory tbs = _buildTbs(abi.encodePacked(hex"a9", part1, pcrs, part3));
         NitroValidator.Ptrs memory p = validator.parseAttestation(tbs);
 
-        assertEq(p.pcrs.length, 2, "two pcrs parsed");
+        assertEq(p.pcrs.length, PCR_BANK_SIZE, "pcr bank size");
         assertEq(p.pcrs[0].length(), SYNTH_PCR_LEN, "pcr[0] length");
         assertEq(p.pcrs[1].length(), SYNTH_PCR_LEN, "pcr[1] length");
+        assertTrue(p.pcrs[2].isNull(), "pcr[2] absent");
         // entries after pcrs still parsed
         assertEq(p.cert.length(), SYNTH_CERT_LEN, "cert parsed");
         assertEq(p.cabundle.length, SYNTH_CABUNDLE_COUNT, "cabundle parsed");
@@ -834,6 +839,95 @@ contract NitroValidatorIndefiniteLengthTest is Test {
             new bytes(SYNTH_PCR_LEN)
         );
         _assertDuplicateKnownKeyReverts(duplicatePcrs);
+    }
+
+    /// @dev AWS PCR map keys identify PCR slots, not their position in the map. Sparse maps must
+    ///      preserve the key 8 slot and leave the omitted slots explicitly null.
+    function test_pcrs_sparseMapUsesPcrKeys() public view {
+        bytes memory pcrs = abi.encodePacked(
+            hex"6470637273", // key "pcrs"
+            hex"a6", // map(6)
+            hex"005830",
+            new bytes(SYNTH_PCR_LEN), // 0
+            hex"015830",
+            new bytes(SYNTH_PCR_LEN), // 1
+            hex"025830",
+            new bytes(SYNTH_PCR_LEN), // 2
+            hex"035830",
+            new bytes(SYNTH_PCR_LEN), // 3
+            hex"045830",
+            new bytes(SYNTH_PCR_LEN), // 4
+            hex"085830",
+            new bytes(SYNTH_PCR_LEN) // 8
+        );
+
+        NitroValidator.Ptrs memory p = validator.parseAttestation(_buildTbs(abi.encodePacked(hex"a1", pcrs)));
+
+        assertEq(p.pcrs.length, PCR_BANK_SIZE, "pcr bank size");
+        for (uint256 i = 0; i <= 4; ++i) {
+            assertEq(p.pcrs[i].length(), SYNTH_PCR_LEN, "dense PCR prefix");
+        }
+        for (uint256 i = 5; i <= 7; ++i) {
+            assertTrue(p.pcrs[i].isNull(), "sparse PCR gap");
+        }
+        assertEq(p.pcrs[8].length(), SYNTH_PCR_LEN, "sparse PCR key 8");
+        for (uint256 i = 9; i < PCR_BANK_SIZE; ++i) {
+            assertTrue(p.pcrs[i].isNull(), "trailing PCR absent");
+        }
+    }
+
+    /// @dev A dense map remains indexed by PCR key and uses the same fixed bank representation.
+    function test_pcrs_denseMapUsesPcrKeys() public view {
+        bytes memory pcrs = abi.encodePacked(
+            hex"6470637273", // key "pcrs"
+            hex"a6", // map(6)
+            hex"005830",
+            new bytes(SYNTH_PCR_LEN), // 0
+            hex"015830",
+            new bytes(SYNTH_PCR_LEN), // 1
+            hex"025830",
+            new bytes(SYNTH_PCR_LEN), // 2
+            hex"035830",
+            new bytes(SYNTH_PCR_LEN), // 3
+            hex"045830",
+            new bytes(SYNTH_PCR_LEN), // 4
+            hex"055830",
+            new bytes(SYNTH_PCR_LEN) // 5
+        );
+
+        NitroValidator.Ptrs memory p = validator.parseAttestation(_buildTbs(abi.encodePacked(hex"a1", pcrs)));
+
+        assertEq(p.pcrs.length, PCR_BANK_SIZE, "pcr bank size");
+        for (uint256 i = 0; i < 6; ++i) {
+            assertEq(p.pcrs[i].length(), SYNTH_PCR_LEN, "dense PCR");
+        }
+        assertTrue(p.pcrs[6].isNull(), "PCR after dense map absent");
+    }
+
+    function test_neg_duplicatePcrKey_reverts() public {
+        bytes memory pcrs = abi.encodePacked(
+            hex"6470637273", // key "pcrs"
+            hex"a2", // map(2)
+            hex"005830",
+            new bytes(SYNTH_PCR_LEN), // 0
+            hex"005830",
+            new bytes(SYNTH_PCR_LEN) // duplicate 0
+        );
+
+        vm.expectRevert("duplicate pcr key");
+        validator.parseAttestation(_buildTbs(abi.encodePacked(hex"a1", pcrs)));
+    }
+
+    function test_neg_outOfRangePcrKey_reverts() public {
+        bytes memory pcrs = abi.encodePacked(
+            hex"6470637273", // key "pcrs"
+            hex"a1", // map(1)
+            hex"18205830",
+            new bytes(SYNTH_PCR_LEN) // key 32 is outside 0..31
+        );
+
+        vm.expectRevert("invalid pcr key value");
+        validator.parseAttestation(_buildTbs(abi.encodePacked(hex"a1", pcrs)));
     }
 
     /// @dev Duplicate certificate must not overwrite the leaf certificate pointer.
