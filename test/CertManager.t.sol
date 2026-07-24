@@ -166,6 +166,49 @@ contract CertManagerTest is Test {
         cm.verifyCACertWithHints(mutated, keccak256(CB0), "");
     }
 
+    function test_ParseTbsRejectsSerialTagSubstitution() public {
+        vm.warp(1775145600);
+        CertManager cm = new CertManager(new P384Verifier());
+
+        bytes memory mutated = bytes.concat(CB1);
+        Asn1Ptr root = mutated.root();
+        Asn1Ptr tbsPtr = mutated.firstChildOf(root);
+        Asn1Ptr versionPtr = mutated.firstChildOf(tbsPtr);
+        Asn1Ptr serialPtr = mutated.nextSiblingOf(versionPtr);
+        mutated[serialPtr.header()] = 0x04;
+
+        vm.expectRevert(CertManager.InvalidAsn1Tag.selector);
+        cm.verifyCACertWithHints(mutated, keccak256(CB0), "");
+    }
+
+    function test_ComputeCertIdRejectsSerialTagSubstitution() public {
+        bytes memory mutated = bytes.concat(CB1);
+        Asn1Ptr root = mutated.root();
+        Asn1Ptr tbsPtr = mutated.firstChildOf(root);
+        Asn1Ptr versionPtr = mutated.firstChildOf(tbsPtr);
+        Asn1Ptr serialPtr = mutated.nextSiblingOf(versionPtr);
+        mutated[serialPtr.header()] = 0x04;
+
+        CertManager cm = new CertManager(new P384Verifier());
+        vm.expectRevert(CertManager.InvalidAsn1Tag.selector);
+        cm.computeCertId(mutated);
+    }
+
+    function test_ComputeCertIdRejectsIssuerTagSubstitution() public {
+        bytes memory mutated = bytes.concat(CB1);
+        Asn1Ptr root = mutated.root();
+        Asn1Ptr tbsPtr = mutated.firstChildOf(root);
+        Asn1Ptr versionPtr = mutated.firstChildOf(tbsPtr);
+        Asn1Ptr serialPtr = mutated.nextSiblingOf(versionPtr);
+        Asn1Ptr sigAlgoPtr = mutated.nextSiblingOf(serialPtr);
+        Asn1Ptr issuerPtr = mutated.nextSiblingOf(sigAlgoPtr);
+        mutated[issuerPtr.header()] = 0x31;
+
+        CertManager cm = new CertManager(new P384Verifier());
+        vm.expectRevert(CertManager.InvalidAsn1Tag.selector);
+        cm.computeCertId(mutated);
+    }
+
     function test_ParsePubKeyAcceptsUncompressedP384Point() public view {
         bytes memory pubKey = _patternBytes(96);
         bytes memory spki = abi.encodePacked(hex"3076301006072a8648ce3d020106052b8104002203620004", pubKey);
@@ -203,6 +246,40 @@ contract CertManagerTest is Test {
 
         vm.expectRevert(CertManager.InvalidSubjectPublicKey.selector);
         certManagerPubKeyHarness.parsePubKey(spki);
+    }
+
+    function test_ParsePubKeyRejectsAlgorithmOidTagSubstitution() public {
+        bytes memory pubKey = _patternBytes(96);
+        bytes memory mutated = abi.encodePacked(hex"3076301006072a8648ce3d020106052b8104002203620004", pubKey);
+        Asn1Ptr algorithmPtr = mutated.firstChildOf(mutated.root());
+        Asn1Ptr algorithmOidPtr = mutated.firstChildOf(algorithmPtr);
+        mutated[algorithmOidPtr.header()] = 0x05;
+
+        vm.expectRevert(CertManager.InvalidAsn1Tag.selector);
+        certManagerPubKeyHarness.parsePubKey(mutated);
+    }
+
+    function test_ParsePubKeyRejectsCurveOidTagSubstitution() public {
+        bytes memory pubKey = _patternBytes(96);
+        bytes memory mutated = abi.encodePacked(hex"3076301006072a8648ce3d020106052b8104002203620004", pubKey);
+        Asn1Ptr algorithmPtr = mutated.firstChildOf(mutated.root());
+        Asn1Ptr algorithmOidPtr = mutated.firstChildOf(algorithmPtr);
+        Asn1Ptr curveOidPtr = mutated.nextSiblingOf(algorithmOidPtr);
+        mutated[curveOidPtr.header()] = 0x05;
+
+        vm.expectRevert(CertManager.InvalidAsn1Tag.selector);
+        certManagerPubKeyHarness.parsePubKey(mutated);
+    }
+
+    function test_VerifyExtensionsRejectsOidTagSubstitution() public {
+        bytes memory mutated = _extensions(bytes.concat(_basicConstraintsExtension(), _keyUsageExtension()));
+        Asn1Ptr extensionSequencePtr = mutated.firstChildOf(mutated.root());
+        Asn1Ptr extensionPtr = mutated.firstChildOf(extensionSequencePtr);
+        Asn1Ptr oidPtr = mutated.firstChildOf(extensionPtr);
+        mutated[oidPtr.header()] = 0x05;
+
+        vm.expectRevert(CertManager.InvalidAsn1Tag.selector);
+        certManagerExtensionsHarness.verifyExtensions(mutated, true);
     }
 
     function test_VerifyExtensionsAllowsUnknownNonCriticalExtension() public view {

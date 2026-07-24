@@ -360,8 +360,10 @@ contract CertManager is ICertManager {
     function _certIdentity(bytes memory certificate, Asn1Ptr tbsCertPtr) internal pure returns (bytes32) {
         Asn1Ptr versionPtr = certificate.firstChildOf(tbsCertPtr);
         Asn1Ptr serialPtr = certificate.nextSiblingOf(versionPtr);
+        _requireAsn1Tag(certificate, serialPtr, 0x02);
         Asn1Ptr sigAlgoPtr = certificate.nextSiblingOf(serialPtr);
         Asn1Ptr issuerPtr = certificate.nextSiblingOf(sigAlgoPtr);
+        _requireAsn1Tag(certificate, issuerPtr, 0x30);
         bytes32 serialHash = certificate.keccak(serialPtr.content(), serialPtr.length());
         bytes32 issuerHash = certificate.keccak(issuerPtr.content(), issuerPtr.length());
         return keccak256(abi.encodePacked(issuerHash, serialHash));
@@ -375,7 +377,9 @@ contract CertManager is ICertManager {
         _requireAsn1Tag(certificate, ptr, 0x30);
         Asn1Ptr versionPtr = certificate.firstChildOf(ptr);
         _requireAsn1Tag(certificate, versionPtr, 0xa0);
-        Asn1Ptr sigAlgoPtr = certificate.nextSiblingOf(certificate.nextSiblingOf(versionPtr));
+        Asn1Ptr serialPtr = certificate.nextSiblingOf(versionPtr);
+        _requireAsn1Tag(certificate, serialPtr, 0x02);
+        Asn1Ptr sigAlgoPtr = certificate.nextSiblingOf(serialPtr);
         _requireAsn1Tag(certificate, sigAlgoPtr, 0x30);
 
         if (certificate.keccak(sigAlgoPtr.content(), sigAlgoPtr.length()) != CERT_ALGO_OID) {
@@ -432,6 +436,8 @@ contract CertManager is ICertManager {
         Asn1Ptr subjectPublicKeyPtr = certificate.nextSiblingOf(pubKeyAlgoPtr);
         Asn1Ptr subjectPubKeyPtr = certificate.bitstring(subjectPublicKeyPtr);
 
+        _requireAsn1Tag(certificate, pubKeyAlgoIdPtr, 0x06);
+        _requireAsn1Tag(certificate, algoParamsPtr, 0x06);
         if (certificate.keccak(pubKeyAlgoIdPtr.content(), pubKeyAlgoIdPtr.length()) != EC_PUB_KEY_OID) {
             revert InvalidSubjectPublicKey();
         }
@@ -482,6 +488,7 @@ contract CertManager is ICertManager {
             if (extensionEnd > end) revert InvalidExtension();
             _requireAsn1Tag(certificate, extensionPtr, 0x30);
             Asn1Ptr oidPtr = certificate.firstChildOf(extensionPtr);
+            _requireAsn1Tag(certificate, oidPtr, 0x06);
             bytes32 oid = certificate.keccak(oidPtr.content(), oidPtr.length());
             bool recognized = oid == BASIC_CONSTRAINTS_OID || oid == KEY_USAGE_OID;
 
