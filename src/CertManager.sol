@@ -211,11 +211,13 @@ contract CertManager is ICertManager {
     }
 
     function unrevokeCert(bytes32 certId) external onlyOwner {
+        if (!revoked[certId]) return;
         revoked[certId] = false;
         emit CertUnrevoked(certId, msg.sender);
     }
 
     function _revokeCert(bytes32 certId) internal {
+        if (revoked[certId]) return;
         revoked[certId] = true;
         emit CertRevoked(certId, msg.sender);
     }

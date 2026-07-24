@@ -711,6 +711,20 @@ contract CertRevocationEventTest is Test {
         cm.unrevokeCert(CERT_ID);
     }
 
+    function test_RepeatedRevokeDoesNotEmitEvent() public {
+        cm.revokeCert(CERT_ID);
+
+        vm.recordLogs();
+        cm.revokeCert(CERT_ID);
+        assertEq(vm.getRecordedLogs().length, 0, "repeated revoke emitted event");
+    }
+
+    function test_RepeatedUnrevokeDoesNotEmitEvent() public {
+        vm.recordLogs();
+        cm.unrevokeCert(CERT_ID);
+        assertEq(vm.getRecordedLogs().length, 0, "repeated unrevoke emitted event");
+    }
+
     /// @dev The recorded account is the actual caller, not the contract: a delegated revoker
     ///      address shows up in the event topic.
     function test_RevokeCertRecordsActualCaller() public {
