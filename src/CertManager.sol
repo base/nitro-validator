@@ -137,6 +137,10 @@ contract CertManager is ICertManager {
     ///      on-chain, so a wrong hint only reverts. Pass 0 only when submitting the pinned root;
     ///      otherwise pass the cached parent cert hash. The returned hash is ROOT_CA_CERT_HASH for
     ///      the pinned root and keccak256(tbsCertificate) for every non-root cert.
+    /// @param cert DER-encoded CA certificate to verify and cache.
+    /// @param parentCertHash Cache key of the CA that signed `cert`, or zero for the pinned root.
+    /// @param signatureHints Packed inverse hints for cold certificate signature verification.
+    /// @return certHash Cache key for `cert`, suitable as a parent key for child certificates.
     function verifyCACertWithHints(bytes memory cert, bytes32 parentCertHash, bytes memory signatureHints)
         external
         returns (bytes32)
@@ -150,6 +154,10 @@ contract CertManager is ICertManager {
     /// @dev Same cache short-circuit and hint semantics as {verifyCACertWithHints}: on a cold cert
     ///      `signatureHints` must hold the real off-chain inverse hints (re-verified on-chain); on a
     ///      cached cert they are ignored, but `parentCertHash` must match the cold verification parent.
+    /// @param cert DER-encoded leaf certificate to verify and cache.
+    /// @param parentCertHash Cache key of the CA that signed `cert`.
+    /// @param signatureHints Packed inverse hints for cold certificate signature verification.
+    /// @return cert Verified leaf certificate metadata.
     function verifyClientCertWithHints(bytes memory cert, bytes32 parentCertHash, bytes memory signatureHints)
         external
         returns (VerifiedCert memory)
@@ -161,10 +169,14 @@ contract CertManager is ICertManager {
     /// @dev A non-empty return value only means the cert was cached previously. It may now be
     ///      expired or revoked; use the verification entrypoints for trust-aware reuse. Pass the
     ///      cache key returned by the verification entrypoints.
+    /// @param certHash Certificate cache key.
+    /// @return cert Raw cached metadata, which may no longer be trusted.
     function loadVerified(bytes32 certHash) external view returns (VerifiedCert memory) {
         return _loadVerified(certHash);
     }
 
+    /// @param certId Certificate revocation identity or the pinned root hash.
+    /// @return True if `certId` is currently revoked.
     function isRevoked(bytes32 certId) external view returns (bool) {
         return revoked[certId];
     }
@@ -176,6 +188,8 @@ contract CertManager is ICertManager {
     ///      re-encoding, unlike `keccak256(cert)`. Operators pass the result to {revokeCert} /
     ///      {revokeCerts}; the same value is recorded on-chain when the cert is first verified, so a
     ///      revocation applies to every byte-encoding of that certificate. Reverts on malformed DER.
+    /// @param cert DER-encoded X.509 certificate.
+    /// @return certId Revocation identity `keccak256(issuerHash, serialHash)`.
     function computeCertId(bytes memory cert) external pure returns (bytes32) {
         Asn1Ptr root = cert.root();
         _requireAsn1Tag(cert, root, 0x30);
@@ -184,12 +198,14 @@ contract CertManager is ICertManager {
         return _certIdentity(cert, tbsCertPtr);
     }
 
+    /// @param newOwner Address to receive owner privileges.
     function transferOwnership(address newOwner) external onlyOwner {
         if (newOwner == address(0)) revert InvalidOwner();
         emit OwnershipTransferred(owner, newOwner);
         owner = newOwner;
     }
 
+    /// @param newRevoker Address permitted to revoke non-root certificates.
     function setRevoker(address newRevoker) external onlyOwner {
         if (newRevoker == address(0)) revert InvalidRevoker();
         emit RevokerUpdated(revoker, newRevoker);
@@ -198,11 +214,13 @@ contract CertManager is ICertManager {
 
     /// @notice Revoke a certificate by its identity key (see {computeCertId}); use ROOT_CA_CERT_HASH
     ///         to trigger the owner-only emergency global halt.
+    /// @param certId Certificate revocation identity or the pinned root hash.
     function revokeCert(bytes32 certId) external {
         _requireCanRevoke(certId);
         _revokeCert(certId);
     }
 
+    /// @param certIds Certificate revocation identities to revoke.
     function revokeCerts(bytes32[] calldata certIds) external {
         for (uint256 i = 0; i < certIds.length; ++i) {
             _requireCanRevoke(certIds[i]);
@@ -210,6 +228,7 @@ contract CertManager is ICertManager {
         }
     }
 
+    /// @param certId Certificate revocation identity or the pinned root hash to restore.
     function unrevokeCert(bytes32 certId) external onlyOwner {
         revoked[certId] = false;
         emit CertUnrevoked(certId, msg.sender);
