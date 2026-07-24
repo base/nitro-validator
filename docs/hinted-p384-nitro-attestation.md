@@ -603,7 +603,9 @@ deliberately left to the caller and must be handled in the consuming contract:
   `attestationTbs + signature`, or its hash) as a unique key — dedupe on canonical
   attestation fields (e.g. `moduleID + timestamp + nonce`).
 - **Enclave-image / PCR policy.** The contract returns the parsed `pcrs` and
-  `moduleID`; deciding which enclave images you trust is application policy.
+  `moduleID`; deciding which enclave images you trust is application policy. AWS
+  debug-mode and attach-console attestations have all-zero PCR values and must not
+  be used for production cryptographic attestation.
 - **CRL monitoring.** `CertManager` enforces the certificate identity keys that have been
   marked revoked on-chain, but it does not fetch or parse AWS CRLs. A trusted off-chain
   operator must monitor AWS CRLs and submit `revokeCert` / `revokeCerts` transactions
