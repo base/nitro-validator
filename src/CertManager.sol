@@ -432,6 +432,14 @@ contract CertManager is ICertManager {
         Asn1Ptr subjectPublicKeyPtr = certificate.nextSiblingOf(pubKeyAlgoPtr);
         Asn1Ptr subjectPubKeyPtr = certificate.bitstring(subjectPublicKeyPtr);
 
+        if (
+            algoParamsPtr.header() + algoParamsPtr.totalLength() != pubKeyAlgoPtr.header() + pubKeyAlgoPtr.totalLength()
+                || subjectPublicKeyPtr.header() + subjectPublicKeyPtr.totalLength()
+                    != subjectPublicKeyInfoPtr.header() + subjectPublicKeyInfoPtr.totalLength()
+        ) {
+            revert InvalidSubjectPublicKey();
+        }
+
         if (certificate.keccak(pubKeyAlgoIdPtr.content(), pubKeyAlgoIdPtr.length()) != EC_PUB_KEY_OID) {
             revert InvalidSubjectPublicKey();
         }

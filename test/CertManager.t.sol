@@ -173,6 +173,27 @@ contract CertManagerTest is Test {
         assertEq(certManagerPubKeyHarness.parsePubKey(spki), pubKey);
     }
 
+    function test_ParsePubKeyRejectsTrailingAlgorithmIdentifierFields() public {
+        bytes memory pubKey = _patternBytes(96);
+        bytes memory algorithmIdentifier =
+            _derNode(0x30, bytes.concat(hex"06072a8648ce3d0201", hex"06052b81040022", hex"0500"));
+        bytes memory subjectPublicKey = _derNode(0x03, bytes.concat(hex"0004", pubKey));
+        bytes memory spki = _derNode(0x30, bytes.concat(algorithmIdentifier, subjectPublicKey));
+
+        vm.expectRevert(CertManager.InvalidSubjectPublicKey.selector);
+        certManagerPubKeyHarness.parsePubKey(spki);
+    }
+
+    function test_ParsePubKeyRejectsTrailingSubjectPublicKeyInfoFields() public {
+        bytes memory pubKey = _patternBytes(96);
+        bytes memory algorithmIdentifier = _derNode(0x30, hex"06072a8648ce3d020106052b81040022");
+        bytes memory subjectPublicKey = _derNode(0x03, bytes.concat(hex"0004", pubKey));
+        bytes memory spki = _derNode(0x30, bytes.concat(algorithmIdentifier, subjectPublicKey, hex"0500"));
+
+        vm.expectRevert(CertManager.InvalidSubjectPublicKey.selector);
+        certManagerPubKeyHarness.parsePubKey(spki);
+    }
+
     function test_ParsePubKeyRejectsCompressedP384Point() public {
         bytes memory compressedKey = _patternBytes(48);
         bytes memory spki = abi.encodePacked(hex"3046301006072a8648ce3d020106052b8104002203320002", compressedKey);
