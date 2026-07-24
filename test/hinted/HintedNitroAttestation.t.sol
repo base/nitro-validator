@@ -74,6 +74,13 @@ contract NitroValidatorParseHarness is NitroValidator {
     }
 }
 
+/// @dev Fails if validation reaches either certificate verification call.
+contract CertVerificationCallGuard {
+    fallback() external {
+        revert("cert verification reached");
+    }
+}
+
 contract HintedNitroAttestationTest is Test {
     using Asn1Decode for bytes;
     using CborDecode for bytes;
@@ -87,6 +94,7 @@ contract HintedNitroAttestationTest is Test {
     CertManager certManager;
     NitroValidator validator;
     NitroValidatorParseHarness parser;
+    NitroValidator guardedValidator;
     P384Verifier p384Verifier;
     P384HintCollector hintCollector;
     U384TestWrapper u384;
@@ -123,6 +131,7 @@ contract HintedNitroAttestationTest is Test {
         certManager = new CertManager(p384Verifier);
         validator = new NitroValidator(certManager, p384Verifier);
         parser = new NitroValidatorParseHarness(certManager, p384Verifier);
+        guardedValidator = new NitroValidator(ICertManager(address(new CertVerificationCallGuard())), p384Verifier);
         hintCollector = new P384HintCollector();
         u384 = new U384TestWrapper();
     }
@@ -715,6 +724,23 @@ contract HintedNitroAttestationTest is Test {
         freshValidator.validateAttestationWithHints(attestationTbs, signature, "");
     }
 
+    function test_LeafCertificateAbsentRejectsBeforeVerification() public {
+        vm.expectRevert("invalid cert");
+        guardedValidator.validateAttestationWithHints(_minimalValidationTbs(false, new bytes(0)), "", "");
+    }
+
+    function test_LeafCertificateZeroLengthRejectsBeforeVerification() public {
+        vm.expectRevert("invalid cert");
+        guardedValidator.validateAttestationWithHints(_minimalValidationTbs(true, hex"40"), "", "");
+    }
+
+    function test_LeafCertificateOversizedRejectsBeforeVerification() public {
+        vm.expectRevert("invalid cert");
+        guardedValidator.validateAttestationWithHints(
+            _minimalValidationTbs(true, abi.encodePacked(hex"590401", new bytes(1025))), "", ""
+        );
+    }
+
     function test_HintedValidationRejectsInvalidFinalSignature() public {
         bytes memory attestation = _repairMissingPublicKeyBytes(_decodeBase64(_realAttestationB64()));
         (bytes memory attestationTbs, bytes memory signature) = validator.decodeAttestationTbs(attestation);
@@ -1002,6 +1028,46 @@ contract HintedNitroAttestationTest is Test {
             if (out < decodedLen) output[out++] = bytes1(uint8(n >> 8));
             if (out < decodedLen) output[out++] = bytes1(uint8(n));
         }
+    }
+
+    function _minimalValidationTbs(bool includeCert, bytes memory certValue) internal pure returns (bytes memory) {
+        bytes memory entries = abi.encodePacked(
+            hex"696d6f64756c655f6964",
+            hex"6474657374",
+            hex"66646967657374",
+            hex"66534841333834",
+            hex"6974696d657374616d70",
+            hex"1a000f4240",
+            hex"6470637273",
+            hex"a1005830",
+            new bytes(48)
+        );
+        if (includeCert) {
+            entries = abi.encodePacked(entries, hex"6b6365727469666963617465", certValue);
+        }
+        entries = abi.encodePacked(
+            entries,
+            hex"68636162756e646c65",
+            hex"814100",
+            hex"6a7075626c69635f6b6579",
+            hex"f6",
+            hex"69757365725f64617461",
+            hex"f6",
+            hex"656e6f6e6365",
+            hex"f6"
+        );
+        return _buildTbs(abi.encodePacked(includeCert ? uint8(0xa9) : uint8(0xa8), entries));
+    }
+
+    function _buildTbs(bytes memory mapBytes) internal pure returns (bytes memory) {
+        bytes memory prefix = hex"846a5369676e61747572653144a101382240";
+        uint256 len = mapBytes.length;
+        if (len <= 23) {
+            return abi.encodePacked(prefix, uint8(0x40 | len), mapBytes);
+        } else if (len <= 255) {
+            return abi.encodePacked(prefix, uint8(0x58), uint8(len), mapBytes);
+        }
+        return abi.encodePacked(prefix, uint8(0x59), uint16(len), mapBytes);
     }
 
     function _base64Value(bytes1 char) internal pure returns (uint256) {
