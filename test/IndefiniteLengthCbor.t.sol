@@ -357,6 +357,36 @@ contract NitroValidatorIndefiniteLengthTest is Test {
         validator = new NitroValidatorHarness(ICertManager(address(new StubCertManager())), new P384Verifier());
     }
 
+    // ── COSE decoder tests ────────────────────────────────────
+
+    /// @dev AWS uses an empty unprotected header map; it must still be consumed before the payload.
+    function test_decode_emptyUnprotectedMap_preservesPayload() public view {
+        (bytes memory tbs, bytes memory signature) = validator.decodeAttestationTbs(hex"8440a043aabbcc42ddee");
+
+        assertEq(tbs, hex"846a5369676e617475726531404043aabbcc", "unexpected attestation TBS");
+        assertEq(signature, hex"ddee", "unexpected signature");
+    }
+
+    /// @dev A valid non-empty unprotected map must be skipped in full before locating the payload.
+    function test_decode_nonEmptyUnprotectedMap_preservesPayload() public view {
+        (bytes memory tbs, bytes memory signature) = validator.decodeAttestationTbs(hex"8440a1010243aabbcc42ddee");
+
+        assertEq(tbs, hex"846a5369676e617475726531404043aabbcc", "unexpected attestation TBS");
+        assertEq(signature, hex"ddee", "unexpected signature");
+    }
+
+    /// @dev A map declaring an entry without supplying its value must not be treated as an empty map.
+    function test_decode_truncatedUnprotectedMap_reverts() public {
+        vm.expectRevert();
+        validator.decodeAttestationTbs(hex"8440a101");
+    }
+
+    /// @dev The COSE Sign1 item is self-delimiting; bytes after its signature are not accepted.
+    function test_decode_trailingOuterBytes_reverts() public {
+        vm.expectRevert("trailing COSE data");
+        validator.decodeAttestationTbs(hex"8440a043aabbcc42ddee00");
+    }
+
     // ── Shared assertion helpers ──────────────────────────────
 
     /// @dev Asserts all fields of a Ptrs parsed from synthetic test data.
