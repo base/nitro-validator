@@ -9,7 +9,9 @@ import {IP384Verifier} from "../../src/IP384Verifier.sol";
 contract CertManagerDemo is CertManager {
     uint256 public immutable certificateExpiryGraceSeconds;
 
-    constructor(IP384Verifier p384Verifier_, uint256 certificateExpiryGraceSeconds_) CertManager(p384Verifier_) {
+    constructor(IP384Verifier p384Verifier_, uint256 certificateExpiryGraceSeconds_)
+        CertManager(p384Verifier_, msg.sender, msg.sender)
+    {
         certificateExpiryGraceSeconds = certificateExpiryGraceSeconds_;
     }
 

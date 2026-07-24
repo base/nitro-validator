@@ -99,11 +99,13 @@ contract CertManager is ICertManager {
         if (msg.sender != revoker) revert NotRevoker();
     }
 
-    constructor(IP384Verifier p384Verifier_) {
+    constructor(IP384Verifier p384Verifier_, address initialOwner, address initialRevoker) {
         require(address(p384Verifier_) != address(0), "missing P384 verifier");
+        if (initialOwner == address(0)) revert InvalidOwner();
+        if (initialRevoker == address(0)) revert InvalidRevoker();
         p384Verifier = p384Verifier_;
-        owner = msg.sender;
-        revoker = msg.sender;
+        owner = initialOwner;
+        revoker = initialRevoker;
         _saveVerified(
             ROOT_CA_CERT_HASH,
             VerifiedCert({
@@ -114,8 +116,8 @@ contract CertManager is ICertManager {
                 pubKey: ROOT_CA_CERT_PUB_KEY
             })
         );
-        emit OwnershipTransferred(address(0), msg.sender);
-        emit RevokerUpdated(address(0), msg.sender);
+        emit OwnershipTransferred(address(0), initialOwner);
+        emit RevokerUpdated(address(0), initialRevoker);
     }
 
     /// @notice DEPRECATED — always reverts. The fully on-chain (non-hinted) path is too expensive
