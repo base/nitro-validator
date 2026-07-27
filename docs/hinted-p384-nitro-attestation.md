@@ -437,6 +437,33 @@ its X.509 validity period has not expired.
 return value means the cert metadata was cached previously; it does not imply the cert is
 currently trusted, unexpired, or unrevoked.
 
+### Production admin controls
+
+The `owner` and `revoker` roles are centralized operational controls over the shared certificate
+cache. They should be configured and monitored before any production consumer relies on cached
+certificate state.
+
+- Hold both roles in hardened production-controlled multisigs, not temporary deployer EOAs. If the
+  deployed version accepts `initialOwner` and `initialRevoker`, set those addresses atomically in
+  the constructor; otherwise transfer ownership and set the revoker before accepting verification
+  traffic.
+- Treat owner transactions as high-risk changes. The owner can transfer ownership, rotate the
+  revoker, undo revocations with `unrevokeCert`, and revoke or unrevoke `ROOT_CA_CERT_HASH` as a
+  global halt or resume action.
+- Treat revoker transactions as availability-sensitive changes. The revoker can revoke any
+  non-root certificate identity key, and a mistaken or compromised revoker can deny service to
+  consumers relying on the affected cached chain.
+- Monitor and alert on `OwnershipTransferred`, `RevokerUpdated`, `CertRevoked`, and
+  `CertUnrevoked`. Root revocation/unrevocation, unexpected role changes, and unusually large or
+  bursty revocation batches should page production operators.
+- Maintain a key-rotation and incident-response runbook for compromised owner, compromised
+  revoker, lost role keys, accidental revocation/unrevocation, and AWS CRL-driven revocation
+  events. The runbook should identify approvers, transaction signers, monitoring checks, and
+  consumer communications for each scenario.
+- A two-step ownership transfer or timelocked admin contract should be evaluated as a separate
+  admin-model change. It is not included in this short-term remediation because it changes the
+  operational flow and consumes additional contract bytecode.
+
 **First-verified parent pinning.** A cached cert is pinned to the parent it was first
 verified under: cold verification records `verifiedParent[certHash]` once, where
 `certHash` is the canonical cache key, and every later warm reuse requires the caller to
