@@ -489,7 +489,9 @@ contract CertManager is ICertManager {
 
             if (certificate[valuePtr.header()] == 0x01) {
                 if (valuePtr.length() != 1) revert InvalidExtension();
-                if (!recognized && certificate[valuePtr.content()] != 0x00) revert UnsupportedCriticalExtension();
+                uint8 critical = uint8(certificate[valuePtr.content()]);
+                if (critical != 0x00 && critical != 0xff) revert InvalidExtension();
+                if (!recognized && critical == 0xff) revert UnsupportedCriticalExtension();
                 valuePtr = certificate.nextSiblingOf(valuePtr);
             }
 
@@ -536,7 +538,9 @@ contract CertManager is ICertManager {
 
             if (certificate[basicConstraintsPtr.header()] == 0x01) {
                 if (basicConstraintsPtr.length() != 1) revert InvalidBasicConstraints();
-                isCA = certificate[basicConstraintsPtr.content()] == 0xff;
+                uint8 caByte = uint8(certificate[basicConstraintsPtr.content()]);
+                if (caByte != 0x00 && caByte != 0xff) revert InvalidBasicConstraints();
+                isCA = caByte == 0xff;
 
                 if (cursor == end) {
                     if (ca != isCA) revert InvalidBasicConstraints();
