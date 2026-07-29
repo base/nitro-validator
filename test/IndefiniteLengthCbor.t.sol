@@ -131,6 +131,10 @@ contract StubCertManager is ICertManager {
         return false;
     }
 
+    function computeCertId(bytes memory) external pure returns (bytes32) {
+        return bytes32(0);
+    }
+
     function transferOwnership(address) external pure {}
 
     function setRevoker(address) external pure {}
