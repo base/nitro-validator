@@ -93,12 +93,16 @@ interface ICertManager {
     // --- DEPRECATED: these always revert; use the *WithHints variants above. ---
 
     /// @notice DEPRECATED: always reverts. Use {verifyCACertWithHints}.
+    /// @dev Retained as an ABI-compatibility stub. The fully on-chain P-384 verification path
+    ///      became too expensive after Fusaka's EIP-7883 MODEXP repricing and has been removed.
     /// @param cert Unused legacy certificate argument.
     /// @param parentCertHash Unused legacy parent cache key argument.
     /// @return certHash Unreachable legacy return value.
     function verifyCACert(bytes memory cert, bytes32 parentCertHash) external returns (bytes32 certHash);
 
     /// @notice DEPRECATED: always reverts. Use {verifyClientCertWithHints}.
+    /// @dev Retained as an ABI-compatibility stub. The fully on-chain P-384 verification path
+    ///      became too expensive after Fusaka's EIP-7883 MODEXP repricing and has been removed.
     /// @param cert Unused legacy certificate argument.
     /// @param parentCertHash Unused legacy parent cache key argument.
     /// @return verifiedCert Unreachable legacy return value.
