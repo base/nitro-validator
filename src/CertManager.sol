@@ -241,7 +241,7 @@ contract CertManager is ICertManager {
         return certHash == ROOT_CA_CERT_HASH ? ROOT_CA_CERT_HASH : certIdentity[certHash];
     }
 
-    function _requireCachedChainNotRevoked(bytes32 certHash) internal view {
+    function _requireCachedChainValid(bytes32 certHash) internal view {
         while (certHash != bytes32(0)) {
             _requireNotRevoked(_revocationKey(certHash));
             VerifiedCert memory cert = _loadVerified(certHash);
@@ -253,8 +253,8 @@ contract CertManager is ICertManager {
             certHash = verifiedParent[certHash];
         }
         // Fail closed: a chain that terminates at bytes32(0) without reaching the pinned root is
-        // broken and must not be treated as a verified, non-revoked chain. Reverting here instead
-        // of returning silently means revocation safety never depends on upstream guards.
+        // broken and must not be treated as valid. Reverting here instead of returning silently
+        // means cached-chain validity never depends on upstream guards.
         revert IncompleteCertChain();
     }
 
@@ -269,7 +269,7 @@ contract CertManager is ICertManager {
         if (certHash != ROOT_CA_CERT_HASH) {
             parent = _loadVerified(parentCertHash);
             require(parent.pubKey.length > 0, "parent cert unverified");
-            _requireCachedChainNotRevoked(parentCertHash);
+            _requireCachedChainValid(parentCertHash);
             require(parent.ca, "parent cert is not a CA");
             require(!ca || parent.maxPathLen != 0, "maxPathLen exceeded");
         }

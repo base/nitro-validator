@@ -626,7 +626,7 @@ contract CertManagerTest is Test {
     }
 }
 
-/// @dev Exposes the internal revocation-chain walk and lets tests seed the `verifiedParent`
+/// @dev Exposes the cached-chain validity walk and lets tests seed the `verifiedParent`
 ///      cache directly so the broken-chain (fail-closed) behaviour can be exercised in isolation.
 contract RevocationChainHarness is CertManager {
     constructor() CertManager(new P384Verifier()) {}
@@ -642,15 +642,15 @@ contract RevocationChainHarness is CertManager {
         );
     }
 
-    function requireCachedChainNotRevoked(bytes32 certHash) external view {
-        _requireCachedChainNotRevoked(certHash);
+    function requireCachedChainValid(bytes32 certHash) external view {
+        _requireCachedChainValid(certHash);
     }
 }
 
-/// @dev Regression coverage for BLOCKSEC-5249 finding L-01: `_requireCachedChainNotRevoked`
+/// @dev Regression coverage for BLOCKSEC-5249 finding L-01: `_requireCachedChainValid`
 ///      previously fell through and returned silently when a cached chain terminated at
 ///      bytes32(0) without reaching the pinned root, i.e. it failed open on a broken chain.
-contract RequireCachedChainNotRevokedTest is Test {
+contract RequireCachedChainValidTest is Test {
     RevocationChainHarness internal cm;
 
     bytes32 internal constant CHILD = bytes32(uint256(1));
@@ -667,7 +667,7 @@ contract RequireCachedChainNotRevokedTest is Test {
         cm.setParent(CHILD, PARENT);
         cm.setParent(PARENT, root);
         // Walks CHILD -> PARENT -> ROOT and returns without reverting.
-        cm.requireCachedChainNotRevoked(CHILD);
+        cm.requireCachedChainValid(CHILD);
     }
 
     function test_RevertsWhenCachedGrandparentIsExpired() public {
@@ -682,7 +682,7 @@ contract RequireCachedChainNotRevokedTest is Test {
         cm.setParent(grandparent, cm.ROOT_CA_CERT_HASH());
 
         vm.expectRevert("cert expired");
-        cm.requireCachedChainNotRevoked(CHILD);
+        cm.requireCachedChainValid(CHILD);
     }
 
     function test_RevertsWhenChainDoesNotReachRoot() public {
@@ -692,12 +692,12 @@ contract RequireCachedChainNotRevokedTest is Test {
         cm.setCachedCert(PARENT, type(uint64).max);
         cm.setParent(CHILD, PARENT);
         vm.expectRevert(CertManager.IncompleteCertChain.selector);
-        cm.requireCachedChainNotRevoked(CHILD);
+        cm.requireCachedChainValid(CHILD);
     }
 
     function test_RevertsOnZeroCertHash() public {
         vm.expectRevert(CertManager.IncompleteCertChain.selector);
-        cm.requireCachedChainNotRevoked(bytes32(0));
+        cm.requireCachedChainValid(bytes32(0));
     }
 }
 
