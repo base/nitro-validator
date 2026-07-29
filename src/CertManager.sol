@@ -552,7 +552,7 @@ contract CertManager is ICertManager {
             if (certificate[basicConstraintsPtr.header()] == 0x02) {
                 if (basicConstraintsPtr.length() == 0) revert InvalidBasicConstraints();
                 uint256 pathLen = certificate.uintAt(basicConstraintsPtr);
-                if (pathLen > 0x7fffffffffffffff) revert InvalidBasicConstraints();
+                if (pathLen > uint256(uint64(type(int64).max))) revert InvalidBasicConstraints();
                 maxPathLen = int64(uint64(pathLen));
             } else {
                 revert InvalidBasicConstraints();
