@@ -373,16 +373,20 @@ contract CertManager is ICertManager {
         returns (uint64 notAfter, int64 maxPathLen, bytes32 issuerHash, bytes32 subjectHash, bytes memory pubKey)
     {
         _requireAsn1Tag(certificate, ptr, 0x30);
-        Asn1Ptr versionPtr = certificate.firstChildOf(ptr);
-        _requireAsn1Tag(certificate, versionPtr, 0xa0);
-        Asn1Ptr sigAlgoPtr = certificate.nextSiblingOf(certificate.nextSiblingOf(versionPtr));
+        Asn1Ptr sigAlgoPtr;
+        {
+            Asn1Ptr versionPtr = certificate.firstChildOf(ptr);
+            _requireAsn1Tag(certificate, versionPtr, 0xa0);
+            sigAlgoPtr = certificate.nextSiblingOf(certificate.nextSiblingOf(versionPtr));
+
+            // as extensions are used in cert, version should be 3 (value 2) as per https://datatracker.ietf.org/doc/html/rfc5280#section-4.1.2.1
+            if (certificate.uintAt(certificate.firstChildOf(versionPtr)) != 2) revert InvalidCertVersion();
+        }
         _requireAsn1Tag(certificate, sigAlgoPtr, 0x30);
 
         if (certificate.keccak(sigAlgoPtr.content(), sigAlgoPtr.length()) != CERT_ALGO_OID) {
             revert InvalidCertAlgorithm();
         }
-        // as extensions are used in cert, version should be 3 (value 2) as per https://datatracker.ietf.org/doc/html/rfc5280#section-4.1.2.1
-        if (certificate.uintAt(certificate.firstChildOf(versionPtr)) != 2) revert InvalidCertVersion();
 
         (notAfter, maxPathLen, issuerHash, subjectHash, pubKey) =
             _parseTbsInner(certificate, sigAlgoPtr, ca, ptr.content() + ptr.length());
