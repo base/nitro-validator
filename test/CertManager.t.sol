@@ -25,7 +25,7 @@ contract Asn1DecodeHarness {
 contract CertManagerHarness is CertManager {
     using Asn1Decode for bytes;
 
-    constructor() CertManager(new P384Verifier()) {}
+    constructor() CertManager(new P384Verifier(), msg.sender, msg.sender) {}
 
     function verifyBasicConstraints(bytes memory der, bool ca) external pure returns (int64) {
         return _verifyBasicConstraintsExtension(der, der.root(), ca);
@@ -35,7 +35,7 @@ contract CertManagerHarness is CertManager {
 contract CertManagerPubKeyHarness is CertManager {
     using Asn1Decode for bytes;
 
-    constructor() CertManager(new P384Verifier()) {}
+    constructor() CertManager(new P384Verifier(), msg.sender, msg.sender) {}
 
     function parsePubKey(bytes memory subjectPublicKeyInfo) external pure returns (bytes memory) {
         return _parsePubKey(subjectPublicKeyInfo, subjectPublicKeyInfo.root());
@@ -45,7 +45,7 @@ contract CertManagerPubKeyHarness is CertManager {
 contract CertManagerExtensionsHarness is CertManager {
     using Asn1Decode for bytes;
 
-    constructor() CertManager(new P384Verifier()) {}
+    constructor() CertManager(new P384Verifier(), msg.sender, msg.sender) {}
 
     function verifyExtensions(bytes memory der, bool ca) external pure returns (int64) {
         return _verifyExtensions(der, der.root(), ca);
@@ -84,6 +84,15 @@ contract CertManagerTest is Test {
 
     function test_BasicConstraintsEmptySequenceIsClientCert() public view {
         assertEq(int256(certManagerHarness.verifyBasicConstraints(hex"3000", false)), -1);
+    }
+
+    function test_ConstructorSetsInitialRoles() public {
+        address initialOwner = address(0xA11CE);
+        address initialRevoker = address(0xB0B);
+        CertManager cm = new CertManager(new P384Verifier(), initialOwner, initialRevoker);
+
+        assertEq(cm.owner(), initialOwner);
+        assertEq(cm.revoker(), initialRevoker);
     }
 
     function test_BasicConstraintsEmptySequenceRejectsCACert() public {
@@ -158,7 +167,7 @@ contract CertManagerTest is Test {
 
     function test_ParseTbsRejectsTrailingSignedFields() public {
         vm.warp(1775145600);
-        CertManager cm = new CertManager(new P384Verifier());
+        CertManager cm = new CertManager(new P384Verifier(), address(this), address(this));
 
         bytes memory mutated = _appendTbsTrailingField(CB1);
 
@@ -248,7 +257,7 @@ contract CertManagerTest is Test {
     // non-hinted verification path.
     function test_VerifyCACertWithHints_ShortS_Regression() public {
         vm.warp(1775145600);
-        CertManager cm = new CertManager(new P384Verifier());
+        CertManager cm = new CertManager(new P384Verifier(), address(this), address(this));
         P384HintCollector collector = new P384HintCollector();
 
         // CB0 (AWS Nitro root) is pinned in the constructor.
@@ -262,7 +271,7 @@ contract CertManagerTest is Test {
 
     function test_VerifyCACertWithHints_MalleableSignatureUsesSameTbsCacheKey() public {
         vm.warp(1775145600);
-        CertManager cm = new CertManager(new P384Verifier());
+        CertManager cm = new CertManager(new P384Verifier(), address(this), address(this));
         P384HintCollector collector = new P384HintCollector();
 
         bytes32 rootHash = keccak256(CB0);
@@ -285,7 +294,7 @@ contract CertManagerTest is Test {
 
     function test_VerifyCACertWithHints_RejectsMalleableRootAlias() public {
         vm.warp(1775145600);
-        CertManager cm = new CertManager(new P384Verifier());
+        CertManager cm = new CertManager(new P384Verifier(), address(this), address(this));
         P384HintCollector collector = new P384HintCollector();
 
         bytes32 rootHash = keccak256(CB0);
@@ -303,7 +312,7 @@ contract CertManagerTest is Test {
 
     function test_VerifyCACertWithHints_RejectsSignatureWrapperTagSubstitution() public {
         vm.warp(1775145600);
-        CertManager cm = new CertManager(new P384Verifier());
+        CertManager cm = new CertManager(new P384Verifier(), address(this), address(this));
         P384HintCollector collector = new P384HintCollector();
 
         bytes32 rootHash = keccak256(CB0);
@@ -320,7 +329,7 @@ contract CertManagerTest is Test {
 
     function test_VerifyCACertWithHints_RejectsTrailingSignatureFields() public {
         vm.warp(1775145600);
-        CertManager cm = new CertManager(new P384Verifier());
+        CertManager cm = new CertManager(new P384Verifier(), address(this), address(this));
         P384HintCollector collector = new P384HintCollector();
 
         bytes32 rootHash = keccak256(CB0);
@@ -335,7 +344,7 @@ contract CertManagerTest is Test {
 
     function test_VerifyCACertWithHints_RejectsOuterTagSubstitution() public {
         vm.warp(1775145600);
-        CertManager cm = new CertManager(new P384Verifier());
+        CertManager cm = new CertManager(new P384Verifier(), address(this), address(this));
 
         bytes32 rootHash = keccak256(CB0);
         bytes memory mutated = bytes.concat(CB1);
@@ -347,7 +356,7 @@ contract CertManagerTest is Test {
 
     function test_VerifyCACertWithHints_RejectsTbsAlgorithmTagSubstitution() public {
         vm.warp(1775145600);
-        CertManager cm = new CertManager(new P384Verifier());
+        CertManager cm = new CertManager(new P384Verifier(), address(this), address(this));
 
         bytes32 rootHash = keccak256(CB0);
         bytes memory mutated = bytes.concat(CB1);
@@ -629,7 +638,7 @@ contract CertManagerTest is Test {
 /// @dev Exposes the internal revocation-chain walk and lets tests seed the `verifiedParent`
 ///      cache directly so the broken-chain (fail-closed) behaviour can be exercised in isolation.
 contract RevocationChainHarness is CertManager {
-    constructor() CertManager(new P384Verifier()) {}
+    constructor() CertManager(new P384Verifier(), msg.sender, msg.sender) {}
 
     function setParent(bytes32 child, bytes32 parent) external {
         verifiedParent[child] = parent;
@@ -687,7 +696,7 @@ contract CertRevocationEventTest is Test {
 
     function setUp() public {
         // Deployer is both owner and revoker, so this contract can revoke/unrevoke directly.
-        cm = new CertManager(new P384Verifier());
+        cm = new CertManager(new P384Verifier(), address(this), address(this));
     }
 
     function test_RevokeCertEmitsSender() public {

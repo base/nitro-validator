@@ -406,7 +406,7 @@ AWS's Nitro attestation documentation disables CRL checking in its sample valida
 flow. This implementation keeps CRL parsing off-chain and exposes an operational
 revocation hook on-chain:
 
-- the `CertManager` deployer starts as both `owner` and `revoker`;
+- the `CertManager` constructor configures the initial `owner` and `revoker` addresses atomically;
 - the owner can transfer ownership, rotate the revoker, undo accidental revocations
   with `unrevokeCert`, and revoke `ROOT_CA_CERT_HASH` as an emergency global halt;
 - the revoker can call `revokeCert` / `revokeCerts` for non-root AWS certificate

@@ -128,7 +128,7 @@ contract HintedNitroAttestationTest is Test {
     function setUp() public {
         vm.warp(1767472867); // 2026-01-03T20:41:07Z, matching the attestation timestamp.
         p384Verifier = new P384Verifier();
-        certManager = new CertManager(p384Verifier);
+        certManager = new CertManager(p384Verifier, address(this), address(this));
         validator = new NitroValidator(certManager, p384Verifier);
         parser = new NitroValidatorParseHarness(certManager, p384Verifier);
         guardedValidator = new NitroValidator(ICertManager(address(new CertVerificationCallGuard())), p384Verifier);
@@ -717,7 +717,7 @@ contract HintedNitroAttestationTest is Test {
     function test_HintedValidationRequiresWarmCache() public {
         bytes memory attestation = _repairMissingPublicKeyBytes(_decodeBase64(_realAttestationB64()));
         (bytes memory attestationTbs, bytes memory signature) = validator.decodeAttestationTbs(attestation);
-        CertManager freshCertManager = new CertManager(p384Verifier);
+        CertManager freshCertManager = new CertManager(p384Verifier, address(this), address(this));
         NitroValidator freshValidator = new NitroValidator(freshCertManager, p384Verifier);
 
         vm.expectRevert("inverse hint underflow");
@@ -806,13 +806,13 @@ contract HintedNitroAttestationTest is Test {
         uint64 notAfter = certManager.loadVerified(certHash).notAfter;
 
         // Exactly at notAfter: cold verification on a fresh manager succeeds (cert still valid).
-        CertManager atBoundary = new CertManager(p384Verifier);
+        CertManager atBoundary = new CertManager(p384Verifier, address(this), address(this));
         vm.warp(notAfter);
         atBoundary.verifyCACertWithHints(caCert, parentHash, hints);
         assertGt(atBoundary.loadVerified(certHash).pubKey.length, 0, "cert valid at notAfter");
 
         // One second later: cold verification on a fresh manager is rejected as expired.
-        CertManager pastBoundary = new CertManager(p384Verifier);
+        CertManager pastBoundary = new CertManager(p384Verifier, address(this), address(this));
         vm.warp(uint256(notAfter) + 1);
         vm.expectRevert("certificate not valid anymore");
         pastBoundary.verifyCACertWithHints(caCert, parentHash, hints);

@@ -35,11 +35,12 @@ For the full design, security argument, and measured gas, see
 Deploy in this order (the verifier references are immutable):
 
 1. `P384Verifier`
-2. `CertManager(p384Verifier)` — pins the AWS Nitro root CA and sets the deployer as owner/revoker.
+2. `CertManager(p384Verifier, initialOwner, initialRevoker)` — pins the AWS Nitro root CA and
+   configures the production owner and revoker atomically.
 3. `NitroValidator(certManager, p384Verifier)`
 
-After deployment, move ownership to the production admin and set the operational revoker with
-`transferOwnership` / `setRevoker`.
+Use hardened multisig or other production-controlled addresses for `initialOwner` and
+`initialRevoker`; do not use a temporary deployer key for either role.
 
 ### Verification flow
 
@@ -92,7 +93,7 @@ off-chain). Revoked certificates are rejected on both cold verification and cach
 independently of `notAfter`. Cached descendants are also rejected when their cached parent chain
 contains a revoked certificate.
 
-- The deployer starts as both `owner` and `revoker`.
+- `owner` and `revoker` are configured atomically by the constructor.
 - The owner can call `transferOwnership`, `setRevoker`, `unrevokeCert`, and revoke
   `ROOT_CA_CERT_HASH` as an emergency global halt (the root is identified by its pinned hash, since
   it is never parsed on-chain).
