@@ -118,6 +118,11 @@ contract CertManagerTest is Test {
         assertEq(int256(certManagerHarness.verifyBasicConstraints(hex"30030101ff", true)), -1);
     }
 
+    function test_BasicConstraintsRejectsNonCanonicalCABoolean() public {
+        vm.expectRevert(CertManager.InvalidBasicConstraints.selector);
+        certManagerHarness.verifyBasicConstraints(hex"3003010101", false);
+    }
+
     function test_BasicConstraintsAcceptsCAWithPathLen() public view {
         assertEq(int256(certManagerHarness.verifyBasicConstraints(hex"30060101ff020100", true)), 0);
     }
@@ -369,6 +374,13 @@ contract CertManagerTest is Test {
         bytes memory unknownNameConstraints = hex"300c0603551d1e0101ff04023000";
 
         vm.expectRevert(CertManager.UnsupportedCriticalExtension.selector);
+        certManagerExtensionsHarness.verifyExtensions(_clientExtensionsWith(unknownNameConstraints), false);
+    }
+
+    function test_VerifyExtensionsRejectsNonCanonicalCriticalBoolean() public {
+        bytes memory unknownNameConstraints = hex"300c0603551d1e01010104023000";
+
+        vm.expectRevert(CertManager.InvalidExtension.selector);
         certManagerExtensionsHarness.verifyExtensions(_clientExtensionsWith(unknownNameConstraints), false);
     }
 
