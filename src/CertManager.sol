@@ -436,6 +436,15 @@ contract CertManager is ICertManager {
 
         _requireAsn1Tag(certificate, pubKeyAlgoIdPtr, 0x06);
         _requireAsn1Tag(certificate, algoParamsPtr, 0x06);
+
+        if (
+            algoParamsPtr.header() + algoParamsPtr.totalLength() != pubKeyAlgoPtr.header() + pubKeyAlgoPtr.totalLength()
+                || subjectPublicKeyPtr.header() + subjectPublicKeyPtr.totalLength()
+                    != subjectPublicKeyInfoPtr.header() + subjectPublicKeyInfoPtr.totalLength()
+        ) {
+            revert InvalidSubjectPublicKey();
+        }
+
         if (certificate.keccak(pubKeyAlgoIdPtr.content(), pubKeyAlgoIdPtr.length()) != EC_PUB_KEY_OID) {
             revert InvalidSubjectPublicKey();
         }
