@@ -80,16 +80,6 @@ library ECDSA384HintCollectorLib {
         require(consumed_ == inverseHints_.length, "unused inverse hints");
     }
 
-    function verifyWithHintsConsumed(
-        Parameters memory curveParams_,
-        bytes memory hashedMessage_,
-        bytes memory signature_,
-        bytes memory pubKey_,
-        bytes memory inverseHints_
-    ) internal returns (bool ok_, uint256 consumed_) {
-        return _verify(curveParams_, hashedMessage_, signature_, pubKey_, inverseHints_, true);
-    }
-
     function _verify(
         Parameters memory curveParams_,
         bytes memory hashedMessage_,

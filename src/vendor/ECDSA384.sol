@@ -2,8 +2,8 @@
 //
 // Vendored from Solarity solidity-lib: https://github.com/dl-solarity/solidity-lib
 //   Base (upstream, unmodified): commit b947757194de6436062c2d68118c0352be84ac4be
-//   Local modifications: "Add hinted P384 inverse verification" (verifyWithHints /
-//   verifyWithHintsConsumed and the U384 hint-consumption paths), plus strict public
+//   Local modifications: "Add hinted P384 inverse verification" (verifyWithHints and the U384
+//   hint-consumption paths), plus strict public
 //   key coordinate bounds. The exact upstream diff is committed alongside this file
 //   as ECDSA384.hinted.patch for review.
 // Copyright (c) 2023 Solarity. Originally licensed MIT (see header above).
@@ -86,16 +86,6 @@ library ECDSA384 {
         uint256 consumed_;
         (ok_, consumed_) = _verify(curveParams_, hashedMessage_, signature_, pubKey_, inverseHints_, true);
         require(consumed_ == inverseHints_.length, "unused inverse hints");
-    }
-
-    function verifyWithHintsConsumed(
-        Parameters memory curveParams_,
-        bytes memory hashedMessage_,
-        bytes memory signature_,
-        bytes memory pubKey_,
-        bytes memory inverseHints_
-    ) internal view returns (bool ok_, uint256 consumed_) {
-        return _verify(curveParams_, hashedMessage_, signature_, pubKey_, inverseHints_, true);
     }
 
     function _verify(
