@@ -44,6 +44,7 @@ contract NitroValidator {
         CborElement moduleID;
         uint64 timestamp;
         CborElement digest;
+        // Always a 32-slot PCR bank. Missing PCR indices are CBOR-null sentinels.
         CborElement[] pcrs;
         CborElement cert;
         CborElement[] cabundle;
@@ -73,17 +74,20 @@ contract NitroValidator {
         }
 
         CborElement protectedPtr = attestation.byteStringAt(offset);
-        CborElement unprotectedPtr = attestation.nextMap(protectedPtr);
-        CborElement payloadPtr = attestation.nextByteString(unprotectedPtr);
+        // Map pointers end at their header; validate the type, then skip the full item.
+        attestation.nextMap(protectedPtr);
+        uint256 unprotectedEnd = attestation.skipValue(protectedPtr.end());
+        CborElement payloadPtr = attestation.byteStringAt(unprotectedEnd);
         CborElement signaturePtr = attestation.nextByteString(payloadPtr);
 
         uint256 rawProtectedLength = protectedPtr.end() - offset;
-        uint256 rawPayloadLength = payloadPtr.end() - unprotectedPtr.end();
+        uint256 rawPayloadLength = payloadPtr.end() - unprotectedEnd;
         bytes memory rawProtectedBytes = attestation.slice(offset, rawProtectedLength);
-        bytes memory rawPayloadBytes = attestation.slice(unprotectedPtr.end(), rawPayloadLength);
+        bytes memory rawPayloadBytes = attestation.slice(unprotectedEnd, rawPayloadLength);
         attestationTbs =
             _constructAttestationTbs(rawProtectedBytes, rawProtectedLength, rawPayloadBytes, rawPayloadLength);
         signature = attestation.slice(signaturePtr.start(), signaturePtr.length());
+        require(signaturePtr.end() == attestation.length, "trailing COSE data");
     }
 
     /// @notice DEPRECATED — always reverts. The fully on-chain (non-hinted) path is too expensive
@@ -110,7 +114,10 @@ contract NitroValidator {
     ///        so do not use `signature` (or its hash) as a uniqueness key — dedupe on attestation
     ///        fields instead.
     ///      - PCR / moduleID policy: the caller must check `ptrs.pcrs` / `ptrs.moduleID` against the
-    ///        enclave image(s) they trust.
+    ///        enclave image(s) they trust. `ptrs.pcrs` is a 32-slot bank indexed by PCR number;
+    ///        omitted slots are CBOR-null sentinels and must be checked with `isNull()` before use.
+    ///        AWS debug-mode and attach-console attestations have all-zero PCR values and must not
+    ///        be trusted for production cryptographic attestation.
     /// @param attestationTbs The COSE Sign1 to-be-signed bytes (from `decodeAttestationTbs`).
     /// @param signature The 96-byte (r||s) P-384 attestation signature.
     /// @param attestationSigHints Off-chain inverse hints for the attestation signature; re-verified
@@ -126,20 +133,26 @@ contract NitroValidator {
         require(ptrs.timestamp > 0, "no timestamp");
         require(ptrs.cabundle.length > 0, "no cabundle");
         require(attestationTbs.keccak(ptrs.digest) == ATTESTATION_DIGEST, "invalid digest");
-        require(1 <= ptrs.pcrs.length && ptrs.pcrs.length <= MAX_PCRS, "invalid pcrs");
+        require(ptrs.pcrs.length == MAX_PCRS, "invalid pcrs");
         require(
-            ptrs.publicKey.isNull() || (1 <= ptrs.publicKey.length() && ptrs.publicKey.length() <= 1024),
+            CborElement.unwrap(ptrs.publicKey) == 0 || ptrs.publicKey.isNull()
+                || (1 <= ptrs.publicKey.length() && ptrs.publicKey.length() <= 1024),
             "invalid pub key"
         );
         require(ptrs.userData.isNull() || (ptrs.userData.length() <= 512), "invalid user data");
         require(ptrs.nonce.isNull() || (ptrs.nonce.length() <= 512), "invalid nonce");
 
+        uint256 pcrCount;
         for (uint256 i = 0; i < ptrs.pcrs.length; i++) {
+            if (ptrs.pcrs[i].isNull()) continue;
+            pcrCount++;
             require(
                 ptrs.pcrs[i].length() == 32 || ptrs.pcrs[i].length() == 48 || ptrs.pcrs[i].length() == 64, "invalid pcr"
             );
         }
+        require(pcrCount > 0, "invalid pcrs");
 
+        require(1 <= ptrs.cert.length() && ptrs.cert.length() <= 1024, "invalid cert");
         bytes memory cert = attestationTbs.slice(ptrs.cert);
         bytes[] memory cabundle = new bytes[](ptrs.cabundle.length);
         for (uint256 i = 0; i < ptrs.cabundle.length; i++) {
@@ -147,10 +160,10 @@ contract NitroValidator {
             cabundle[i] = attestationTbs.slice(ptrs.cabundle[i]);
         }
 
-        ICertManager.VerifiedCert memory parent = verifyCachedCertBundle(cert, cabundle);
+        ICertManager.VerifiedCert memory leafCert = _verifyCachedCertBundle(cert, cabundle);
         bytes memory hash = Sha2Ext.sha384(attestationTbs, 0, attestationTbs.length);
         require(
-            p384Verifier.verifyP384SignatureWithHints(hash, signature, parent.pubKey, attestationSigHints),
+            p384Verifier.verifyP384SignatureWithHints(hash, signature, leafCert.pubKey, attestationSigHints),
             "invalid sig"
         );
 
@@ -162,7 +175,7 @@ contract NitroValidator {
     ///      record without re-checking the signature (and so needs no hints). If a cert is NOT
     ///      cached, signature verification is attempted against an empty hint stream and reverts
     ///      with "inverse hint underflow". Callers must therefore pre-cache the whole bundle first.
-    function verifyCachedCertBundle(bytes memory certificate, bytes[] memory cabundle)
+    function _verifyCachedCertBundle(bytes memory certificate, bytes[] memory cabundle)
         internal
         returns (ICertManager.VerifiedCert memory)
     {
@@ -222,6 +235,7 @@ contract NitroValidator {
         uint256 entryCount = current.value(); // entry count for a definite-length map
 
         Ptrs memory ptrs;
+        ptrs.pcrs = _newPcrBank();
         uint256 seenKeys;
         uint256 end = payload.end();
         for (uint256 entry = 0;; entry++) {
@@ -320,8 +334,8 @@ contract NitroValidator {
     }
 
     /// @dev Parses the `pcrs` map (definite- or indefinite-length) starting from the key element
-    ///      `keyPtr`. Returns the parsed pcr pointers (indexed by pcr key) and the cursor positioned
-    ///      after the map (past the break marker, for indefinite encoding).
+    ///      `keyPtr`. Returns a 32-slot bank indexed by PCR key and the cursor positioned after the
+    ///      map (past the break marker, for indefinite encoding).
     function _parsePcrs(bytes memory tbs, CborElement keyPtr)
         private
         pure
@@ -342,16 +356,26 @@ contract NitroValidator {
             count = current.value();
         }
         require(count <= MAX_PCRS, "too many pcrs");
-        pcrs = new CborElement[](count);
+        pcrs = _newPcrBank();
         for (uint256 i = 0; i < count; i++) {
             current = tbs.nextPositiveInt(current);
             uint256 key = current.value();
-            require(key < count, "invalid pcr key value");
-            require(CborElement.unwrap(pcrs[key]) == 0, "duplicate pcr key");
+            require(key < MAX_PCRS, "invalid pcr key value");
+            require(pcrs[key].isNull(), "duplicate pcr key");
             current = tbs.nextByteString(current);
             pcrs[key] = current;
         }
         if (indefinite) current = _consumeBreak(tbs, current);
+    }
+
+    /// @dev Returns the fixed-size PCR bank. A null sentinel makes absent indices safe to inspect
+    ///      with {LibCborElement.isNull} without confusing them with a valid zero-length pointer.
+    function _newPcrBank() private pure returns (CborElement[] memory pcrs) {
+        pcrs = new CborElement[](MAX_PCRS);
+        CborElement empty = LibCborElement.toCborElement(0xf6, 0, 0);
+        for (uint256 i = 0; i < MAX_PCRS; i++) {
+            pcrs[i] = empty;
+        }
     }
 
     /// @dev True if the CBOR container header at `headerIx` uses indefinite-length encoding (ai=31).

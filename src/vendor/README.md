@@ -22,8 +22,8 @@ from `solidity-lib` is used by this repo.
 
 `ECDSA384.sol` carries two functional changes on top of the base commit:
 
-- **"Add hinted P384 inverse verification"** — adding `verifyWithHints` /
-  `verifyWithHintsConsumed` and the hint-consumption paths in `U384`
+- **"Add hinted P384 inverse verification"** — adding `verifyWithHints` and the
+  hint-consumption paths in `U384`
   (`initCallWithHints`, `_nextInverseHint`, the hinted branches of `moddivAssign` /
   `modinv`).
 - **Strict public key coordinate bounds** — `_isOnCurve` rejects coordinates `>= p`,

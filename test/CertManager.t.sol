@@ -7,6 +7,7 @@ import {ICertManager} from "../src/ICertManager.sol";
 import {Asn1Decode, LibAsn1Ptr, Asn1Ptr} from "../src/Asn1Decode.sol";
 import {LibBytes} from "../src/LibBytes.sol";
 import {P384Verifier} from "../src/P384Verifier.sol";
+import {IP384Verifier} from "../src/IP384Verifier.sol";
 import {P384HintCollector} from "./helpers/HintedNitroTestHelpers.sol";
 
 contract Asn1DecodeHarness {
@@ -25,7 +26,7 @@ contract Asn1DecodeHarness {
 contract CertManagerHarness is CertManager {
     using Asn1Decode for bytes;
 
-    constructor() CertManager(new P384Verifier()) {}
+    constructor() CertManager(new P384Verifier(), msg.sender, msg.sender) {}
 
     function verifyBasicConstraints(bytes memory der, bool ca) external pure returns (int64) {
         return _verifyBasicConstraintsExtension(der, der.root(), ca);
@@ -35,7 +36,7 @@ contract CertManagerHarness is CertManager {
 contract CertManagerPubKeyHarness is CertManager {
     using Asn1Decode for bytes;
 
-    constructor() CertManager(new P384Verifier()) {}
+    constructor() CertManager(new P384Verifier(), msg.sender, msg.sender) {}
 
     function parsePubKey(bytes memory subjectPublicKeyInfo) external pure returns (bytes memory) {
         return _parsePubKey(subjectPublicKeyInfo, subjectPublicKeyInfo.root());
@@ -45,10 +46,23 @@ contract CertManagerPubKeyHarness is CertManager {
 contract CertManagerExtensionsHarness is CertManager {
     using Asn1Decode for bytes;
 
-    constructor() CertManager(new P384Verifier()) {}
+    constructor() CertManager(new P384Verifier(), msg.sender, msg.sender) {}
 
     function verifyExtensions(bytes memory der, bool ca) external pure returns (int64) {
         return _verifyExtensions(der, der.root(), ca);
+    }
+}
+
+contract RevertingP384Verifier is IP384Verifier {
+    error SignatureVerificationCalled();
+
+    function verifyP384SignatureWithHints(bytes memory, bytes memory, bytes memory, bytes memory)
+        external
+        pure
+        override
+        returns (bool)
+    {
+        revert SignatureVerificationCalled();
     }
 }
 
@@ -84,6 +98,15 @@ contract CertManagerTest is Test {
 
     function test_BasicConstraintsEmptySequenceIsClientCert() public view {
         assertEq(int256(certManagerHarness.verifyBasicConstraints(hex"3000", false)), -1);
+    }
+
+    function test_ConstructorSetsInitialRoles() public {
+        address initialOwner = address(0xA11CE);
+        address initialRevoker = address(0xB0B);
+        CertManager cm = new CertManager(new P384Verifier(), initialOwner, initialRevoker);
+
+        assertEq(cm.owner(), initialOwner);
+        assertEq(cm.revoker(), initialRevoker);
     }
 
     function test_BasicConstraintsEmptySequenceRejectsCACert() public {
@@ -158,12 +181,64 @@ contract CertManagerTest is Test {
 
     function test_ParseTbsRejectsTrailingSignedFields() public {
         vm.warp(1775145600);
-        CertManager cm = new CertManager(new P384Verifier());
+        CertManager cm = new CertManager(new P384Verifier(), address(this), address(this));
 
         bytes memory mutated = _appendTbsTrailingField(CB1);
 
         vm.expectRevert(Asn1Decode.InvalidAsn1Length.selector);
         cm.verifyCACertWithHints(mutated, keccak256(CB0), "");
+    }
+
+    function test_ParseTbsRejectsTrailingVersionWrapperFieldBeforeSignatureVerification() public {
+        vm.warp(1775145600);
+        CertManager cm = new CertManager(new RevertingP384Verifier(), address(this), address(this));
+        bytes memory mutated = _appendVersionTrailingField(CB1);
+
+        vm.expectRevert(Asn1Decode.InvalidAsn1Length.selector);
+        cm.verifyCACertWithHints(mutated, keccak256(CB0), "");
+    }
+
+    function test_ParseTbsRejectsSerialTagSubstitution() public {
+        vm.warp(1775145600);
+        CertManager cm = new CertManager(new P384Verifier(), address(this), address(this));
+
+        bytes memory mutated = bytes.concat(CB1);
+        Asn1Ptr root = mutated.root();
+        Asn1Ptr tbsPtr = mutated.firstChildOf(root);
+        Asn1Ptr versionPtr = mutated.firstChildOf(tbsPtr);
+        Asn1Ptr serialPtr = mutated.nextSiblingOf(versionPtr);
+        mutated[serialPtr.header()] = 0x04;
+
+        vm.expectRevert(CertManager.InvalidAsn1Tag.selector);
+        cm.verifyCACertWithHints(mutated, keccak256(CB0), "");
+    }
+
+    function test_ComputeCertIdRejectsSerialTagSubstitution() public {
+        bytes memory mutated = bytes.concat(CB1);
+        Asn1Ptr root = mutated.root();
+        Asn1Ptr tbsPtr = mutated.firstChildOf(root);
+        Asn1Ptr versionPtr = mutated.firstChildOf(tbsPtr);
+        Asn1Ptr serialPtr = mutated.nextSiblingOf(versionPtr);
+        mutated[serialPtr.header()] = 0x04;
+
+        CertManager cm = new CertManager(new P384Verifier(), address(this), address(this));
+        vm.expectRevert(CertManager.InvalidAsn1Tag.selector);
+        cm.computeCertId(mutated);
+    }
+
+    function test_ComputeCertIdRejectsIssuerTagSubstitution() public {
+        bytes memory mutated = bytes.concat(CB1);
+        Asn1Ptr root = mutated.root();
+        Asn1Ptr tbsPtr = mutated.firstChildOf(root);
+        Asn1Ptr versionPtr = mutated.firstChildOf(tbsPtr);
+        Asn1Ptr serialPtr = mutated.nextSiblingOf(versionPtr);
+        Asn1Ptr sigAlgoPtr = mutated.nextSiblingOf(serialPtr);
+        Asn1Ptr issuerPtr = mutated.nextSiblingOf(sigAlgoPtr);
+        mutated[issuerPtr.header()] = 0x31;
+
+        CertManager cm = new CertManager(new P384Verifier(), address(this), address(this));
+        vm.expectRevert(CertManager.InvalidAsn1Tag.selector);
+        cm.computeCertId(mutated);
     }
 
     function test_ParsePubKeyAcceptsUncompressedP384Point() public view {
@@ -226,6 +301,40 @@ contract CertManagerTest is Test {
         certManagerPubKeyHarness.parsePubKey(spki);
     }
 
+    function test_ParsePubKeyRejectsAlgorithmOidTagSubstitution() public {
+        bytes memory pubKey = _patternBytes(96);
+        bytes memory mutated = abi.encodePacked(hex"3076301006072a8648ce3d020106052b8104002203620004", pubKey);
+        Asn1Ptr algorithmPtr = mutated.firstChildOf(mutated.root());
+        Asn1Ptr algorithmOidPtr = mutated.firstChildOf(algorithmPtr);
+        mutated[algorithmOidPtr.header()] = 0x05;
+
+        vm.expectRevert(CertManager.InvalidAsn1Tag.selector);
+        certManagerPubKeyHarness.parsePubKey(mutated);
+    }
+
+    function test_ParsePubKeyRejectsCurveOidTagSubstitution() public {
+        bytes memory pubKey = _patternBytes(96);
+        bytes memory mutated = abi.encodePacked(hex"3076301006072a8648ce3d020106052b8104002203620004", pubKey);
+        Asn1Ptr algorithmPtr = mutated.firstChildOf(mutated.root());
+        Asn1Ptr algorithmOidPtr = mutated.firstChildOf(algorithmPtr);
+        Asn1Ptr curveOidPtr = mutated.nextSiblingOf(algorithmOidPtr);
+        mutated[curveOidPtr.header()] = 0x05;
+
+        vm.expectRevert(CertManager.InvalidAsn1Tag.selector);
+        certManagerPubKeyHarness.parsePubKey(mutated);
+    }
+
+    function test_VerifyExtensionsRejectsOidTagSubstitution() public {
+        bytes memory mutated = _extensions(bytes.concat(_basicConstraintsExtension(), _keyUsageExtension()));
+        Asn1Ptr extensionSequencePtr = mutated.firstChildOf(mutated.root());
+        Asn1Ptr extensionPtr = mutated.firstChildOf(extensionSequencePtr);
+        Asn1Ptr oidPtr = mutated.firstChildOf(extensionPtr);
+        mutated[oidPtr.header()] = 0x05;
+
+        vm.expectRevert(CertManager.InvalidAsn1Tag.selector);
+        certManagerExtensionsHarness.verifyExtensions(mutated, true);
+    }
+
     function test_VerifyExtensionsAllowsUnknownNonCriticalExtension() public view {
         bytes memory unknownNameConstraints = hex"30090603551d1e04023000";
 
@@ -269,7 +378,7 @@ contract CertManagerTest is Test {
     // non-hinted verification path.
     function test_VerifyCACertWithHints_ShortS_Regression() public {
         vm.warp(1775145600);
-        CertManager cm = new CertManager(new P384Verifier());
+        CertManager cm = new CertManager(new P384Verifier(), address(this), address(this));
         P384HintCollector collector = new P384HintCollector();
 
         // CB0 (AWS Nitro root) is pinned in the constructor.
@@ -283,7 +392,7 @@ contract CertManagerTest is Test {
 
     function test_VerifyCACertWithHints_MalleableSignatureUsesSameTbsCacheKey() public {
         vm.warp(1775145600);
-        CertManager cm = new CertManager(new P384Verifier());
+        CertManager cm = new CertManager(new P384Verifier(), address(this), address(this));
         P384HintCollector collector = new P384HintCollector();
 
         bytes32 rootHash = keccak256(CB0);
@@ -306,7 +415,7 @@ contract CertManagerTest is Test {
 
     function test_VerifyCACertWithHints_RejectsMalleableRootAlias() public {
         vm.warp(1775145600);
-        CertManager cm = new CertManager(new P384Verifier());
+        CertManager cm = new CertManager(new P384Verifier(), address(this), address(this));
         P384HintCollector collector = new P384HintCollector();
 
         bytes32 rootHash = keccak256(CB0);
@@ -324,7 +433,7 @@ contract CertManagerTest is Test {
 
     function test_VerifyCACertWithHints_RejectsSignatureWrapperTagSubstitution() public {
         vm.warp(1775145600);
-        CertManager cm = new CertManager(new P384Verifier());
+        CertManager cm = new CertManager(new P384Verifier(), address(this), address(this));
         P384HintCollector collector = new P384HintCollector();
 
         bytes32 rootHash = keccak256(CB0);
@@ -341,7 +450,7 @@ contract CertManagerTest is Test {
 
     function test_VerifyCACertWithHints_RejectsTrailingSignatureFields() public {
         vm.warp(1775145600);
-        CertManager cm = new CertManager(new P384Verifier());
+        CertManager cm = new CertManager(new P384Verifier(), address(this), address(this));
         P384HintCollector collector = new P384HintCollector();
 
         bytes32 rootHash = keccak256(CB0);
@@ -356,7 +465,7 @@ contract CertManagerTest is Test {
 
     function test_VerifyCACertWithHints_RejectsOuterTagSubstitution() public {
         vm.warp(1775145600);
-        CertManager cm = new CertManager(new P384Verifier());
+        CertManager cm = new CertManager(new P384Verifier(), address(this), address(this));
 
         bytes32 rootHash = keccak256(CB0);
         bytes memory mutated = bytes.concat(CB1);
@@ -368,7 +477,7 @@ contract CertManagerTest is Test {
 
     function test_VerifyCACertWithHints_RejectsTbsAlgorithmTagSubstitution() public {
         vm.warp(1775145600);
-        CertManager cm = new CertManager(new P384Verifier());
+        CertManager cm = new CertManager(new P384Verifier(), address(this), address(this));
 
         bytes32 rootHash = keccak256(CB0);
         bytes memory mutated = bytes.concat(CB1);
@@ -438,6 +547,19 @@ contract CertManagerTest is Test {
 
         _writeDerLength(result, root, _addDelta(root.length(), delta));
         _writeDerLength(result, tbsPtr, _addDelta(tbsPtr.length(), delta));
+    }
+
+    function _appendVersionTrailingField(bytes memory certificate) internal pure returns (bytes memory result) {
+        Asn1Ptr root = certificate.root();
+        Asn1Ptr tbsPtr = certificate.firstChildOf(root);
+        Asn1Ptr versionPtr = certificate.firstChildOf(tbsPtr);
+        bytes memory nullField = hex"0500";
+        int256 delta = int256(nullField.length);
+        result = _insertBytes(certificate, versionPtr.content() + versionPtr.length(), nullField);
+
+        _writeDerLength(result, root, _addDelta(root.length(), delta));
+        _writeDerLength(result, tbsPtr, _addDelta(tbsPtr.length(), delta));
+        _writeDerLength(result, versionPtr, _addDelta(versionPtr.length(), delta));
     }
 
     function _appendSignatureTrailingField(bytes memory certificate) internal pure returns (bytes memory result) {
@@ -647,24 +769,31 @@ contract CertManagerTest is Test {
     }
 }
 
-/// @dev Exposes the internal revocation-chain walk and lets tests seed the `verifiedParent`
+/// @dev Exposes the cached-chain validity walk and lets tests seed the `verifiedParent`
 ///      cache directly so the broken-chain (fail-closed) behaviour can be exercised in isolation.
 contract RevocationChainHarness is CertManager {
-    constructor() CertManager(new P384Verifier()) {}
+    constructor() CertManager(new P384Verifier(), msg.sender, msg.sender) {}
 
     function setParent(bytes32 child, bytes32 parent) external {
         verifiedParent[child] = parent;
     }
 
-    function requireCachedChainNotRevoked(bytes32 certHash) external view {
-        _requireCachedChainNotRevoked(certHash);
+    function setCachedCert(bytes32 certHash, uint64 notAfter) external {
+        _saveVerified(
+            certHash,
+            VerifiedCert({ca: true, notAfter: notAfter, maxPathLen: -1, subjectHash: bytes32(0), pubKey: new bytes(96)})
+        );
+    }
+
+    function requireCachedChainValid(bytes32 certHash) external view {
+        _requireCachedChainValid(certHash);
     }
 }
 
-/// @dev Regression coverage for BLOCKSEC-5249 finding L-01: `_requireCachedChainNotRevoked`
+/// @dev Regression coverage for BLOCKSEC-5249 finding L-01: `_requireCachedChainValid`
 ///      previously fell through and returned silently when a cached chain terminated at
 ///      bytes32(0) without reaching the pinned root, i.e. it failed open on a broken chain.
-contract RequireCachedChainNotRevokedTest is Test {
+contract RequireCachedChainValidTest is Test {
     RevocationChainHarness internal cm;
 
     bytes32 internal constant CHILD = bytes32(uint256(1));
@@ -676,23 +805,42 @@ contract RequireCachedChainNotRevokedTest is Test {
 
     function test_PassesWhenChainReachesPinnedRoot() public {
         bytes32 root = cm.ROOT_CA_CERT_HASH();
+        cm.setCachedCert(CHILD, type(uint64).max);
+        cm.setCachedCert(PARENT, type(uint64).max);
         cm.setParent(CHILD, PARENT);
         cm.setParent(PARENT, root);
         // Walks CHILD -> PARENT -> ROOT and returns without reverting.
-        cm.requireCachedChainNotRevoked(CHILD);
+        cm.requireCachedChainValid(CHILD);
+    }
+
+    function test_RevertsWhenCachedGrandparentIsExpired() public {
+        vm.warp(1000);
+        bytes32 grandparent = bytes32(uint256(3));
+
+        cm.setCachedCert(CHILD, 2000);
+        cm.setCachedCert(PARENT, 2000);
+        cm.setCachedCert(grandparent, 999);
+        cm.setParent(CHILD, PARENT);
+        cm.setParent(PARENT, grandparent);
+        cm.setParent(grandparent, cm.ROOT_CA_CERT_HASH());
+
+        vm.expectRevert("cert expired");
+        cm.requireCachedChainValid(CHILD);
     }
 
     function test_RevertsWhenChainDoesNotReachRoot() public {
         // verifiedParent[PARENT] is unset (bytes32(0)), so the chain is broken: it can never
         // reach ROOT_CA_CERT_HASH. The fixed function must fail closed instead of returning.
+        cm.setCachedCert(CHILD, type(uint64).max);
+        cm.setCachedCert(PARENT, type(uint64).max);
         cm.setParent(CHILD, PARENT);
         vm.expectRevert(CertManager.IncompleteCertChain.selector);
-        cm.requireCachedChainNotRevoked(CHILD);
+        cm.requireCachedChainValid(CHILD);
     }
 
     function test_RevertsOnZeroCertHash() public {
         vm.expectRevert(CertManager.IncompleteCertChain.selector);
-        cm.requireCachedChainNotRevoked(bytes32(0));
+        cm.requireCachedChainValid(bytes32(0));
     }
 }
 
@@ -708,7 +856,7 @@ contract CertRevocationEventTest is Test {
 
     function setUp() public {
         // Deployer is both owner and revoker, so this contract can revoke/unrevoke directly.
-        cm = new CertManager(new P384Verifier());
+        cm = new CertManager(new P384Verifier(), address(this), address(this));
     }
 
     function test_RevokeCertEmitsSender() public {
@@ -730,6 +878,20 @@ contract CertRevocationEventTest is Test {
         vm.expectEmit(true, true, false, true, address(cm));
         emit CertUnrevoked(CERT_ID, address(this));
         cm.unrevokeCert(CERT_ID);
+    }
+
+    function test_RepeatedRevokeDoesNotEmitEvent() public {
+        cm.revokeCert(CERT_ID);
+
+        vm.recordLogs();
+        cm.revokeCert(CERT_ID);
+        assertEq(vm.getRecordedLogs().length, 0, "repeated revoke emitted event");
+    }
+
+    function test_RepeatedUnrevokeDoesNotEmitEvent() public {
+        vm.recordLogs();
+        cm.unrevokeCert(CERT_ID);
+        assertEq(vm.getRecordedLogs().length, 0, "repeated unrevoke emitted event");
     }
 
     /// @dev The recorded account is the actual caller, not the contract: a delegated revoker

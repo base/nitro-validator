@@ -35,11 +35,12 @@ For the full design, security argument, and measured gas, see
 Deploy in this order (the verifier references are immutable):
 
 1. `P384Verifier`
-2. `CertManager(p384Verifier)` — pins the AWS Nitro root CA and sets the deployer as owner/revoker.
+2. `CertManager(p384Verifier, initialOwner, initialRevoker)` — pins the AWS Nitro root CA and
+   configures the production owner and revoker atomically.
 3. `NitroValidator(certManager, p384Verifier)`
 
-After deployment, move ownership to the production admin and set the operational revoker with
-`transferOwnership` / `setRevoker`.
+Use hardened multisig or other production-controlled addresses for `initialOwner` and
+`initialRevoker`; do not use a temporary deployer key for either role.
 
 ### Verification flow
 
@@ -92,7 +93,7 @@ off-chain). Revoked certificates are rejected on both cold verification and cach
 independently of `notAfter`. Cached descendants are also rejected when their cached parent chain
 contains a revoked certificate.
 
-- The deployer starts as both `owner` and `revoker`.
+- `owner` and `revoker` are configured atomically by the constructor.
 - The owner can call `transferOwnership`, `setRevoker`, `unrevokeCert`, and revoke
   `ROOT_CA_CERT_HASH` as an emergency global halt (the root is identified by its pinned hash, since
   it is never parsed on-chain).
@@ -107,10 +108,11 @@ pragma solidity ^0.8.0;
 
 import {NitroValidator} from "@nitro-validator/NitroValidator.sol";
 import {CertManager} from "@nitro-validator/CertManager.sol";
-import {CborDecode} from "@nitro-validator/CborDecode.sol";
+import {CborDecode, CborElement, LibCborElement} from "@nitro-validator/CborDecode.sol";
 
 contract Validator {
     using CborDecode for bytes;
+    using LibCborElement for CborElement;
 
     uint256 public constant MAX_AGE = 60 minutes;
     bytes32 public constant PCR0 = keccak256("some PCR0 value");
@@ -131,6 +133,8 @@ contract Validator {
         NitroValidator.Ptrs memory ptrs =
             validator.validateAttestationWithHints(attestationTbs, signature, attestationHints);
 
+        // `pcrs` is always a 32-slot bank. Sparse AWS maps leave omitted slots as CBOR null.
+        require(!ptrs.pcrs[0].isNull(), "missing pcr0");
         bytes32 pcr0 = attestationTbs.keccak(ptrs.pcrs[0]);
         require(pcr0 == PCR0, "invalid pcr0 in attestation");
         require(ptrs.timestamp / 1000 + MAX_AGE > block.timestamp, "attestation too old");
@@ -172,7 +176,10 @@ integrator (see [docs](docs/hinted-p384-nitro-attestation.md#integrator-responsi
   integrators must still never use attestation signatures as uniqueness keys; dedupe on canonical
   attestation fields instead.
 - **Enclave policy** — checking `pcrs` / `moduleID` against the enclave image(s) you trust is your
-  responsibility.
+  responsibility. `ptrs.pcrs` is a 32-slot bank indexed by PCR number; omitted AWS PCR entries
+  are explicit CBOR-null pointers, so consumers must check `isNull()` before reading or hashing a
+  slot. AWS debug-mode and attach-console attestations contain all-zero PCR values and must not be
+  trusted for production cryptographic attestation.
 - **Revocation operations** — the contract enforces the on-chain revoked set, but an off-chain
   operator must monitor AWS CRLs and submit the affected certificate identity keys
   (`keccak256(issuerHash, serialHash)`, computed via `computeCertId` or directly from the CRL's
