@@ -148,6 +148,7 @@ contract NitroValidator {
         }
         require(pcrCount > 0, "invalid pcrs");
 
+        require(1 <= ptrs.cert.length() && ptrs.cert.length() <= 1024, "invalid cert");
         bytes memory cert = attestationTbs.slice(ptrs.cert);
         bytes[] memory cabundle = new bytes[](ptrs.cabundle.length);
         for (uint256 i = 0; i < ptrs.cabundle.length; i++) {
