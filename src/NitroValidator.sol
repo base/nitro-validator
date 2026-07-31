@@ -135,7 +135,8 @@ contract NitroValidator {
         require(attestationTbs.keccak(ptrs.digest) == ATTESTATION_DIGEST, "invalid digest");
         require(ptrs.pcrs.length == MAX_PCRS, "invalid pcrs");
         require(
-            ptrs.publicKey.isNull() || (1 <= ptrs.publicKey.length() && ptrs.publicKey.length() <= 1024),
+            CborElement.unwrap(ptrs.publicKey) == 0 || ptrs.publicKey.isNull()
+                || (1 <= ptrs.publicKey.length() && ptrs.publicKey.length() <= 1024),
             "invalid pub key"
         );
         require(ptrs.userData.isNull() || (ptrs.userData.length() <= 512), "invalid user data");

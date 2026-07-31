@@ -6,7 +6,6 @@ import {CborDecode, CborElement, LibCborElement} from "../src/CborDecode.sol";
 import {NitroValidator} from "../src/NitroValidator.sol";
 import {ICertManager} from "../src/ICertManager.sol";
 import {IP384Verifier} from "../src/IP384Verifier.sol";
-import {P384Verifier} from "../src/P384Verifier.sol";
 
 // ──────────────────────────────────────────────────────────────
 //  CBOR constants (RFC 8949)
@@ -87,9 +86,13 @@ contract NitroValidatorHarness is NitroValidator {
     function parseAttestation(bytes memory attestationTbs) external pure returns (Ptrs memory) {
         return _parseAttestation(attestationTbs);
     }
+
+    function validateWithHints(bytes memory attestationTbs) external returns (Ptrs memory) {
+        return validateAttestationWithHints(attestationTbs, "", "");
+    }
 }
 
-/// @notice Minimal ICertManager stub; _parseAttestation is pure so this is never called.
+/// @notice Minimal ICertManager stub for parser and validation harness tests.
 contract StubCertManager is ICertManager {
     function owner() external pure returns (address) {
         return address(0);
@@ -140,6 +143,16 @@ contract StubCertManager is ICertManager {
     function revokeCerts(bytes32[] calldata) external pure {}
 
     function unrevokeCert(bytes32) external pure {}
+}
+
+contract StubP384Verifier is IP384Verifier {
+    function verifyP384SignatureWithHints(bytes memory, bytes memory, bytes memory, bytes memory)
+        external
+        pure
+        returns (bool)
+    {
+        return true;
+    }
 }
 
 // ──────────────────────────────────────────────────────────────
@@ -354,7 +367,7 @@ contract NitroValidatorIndefiniteLengthTest is Test {
     NitroValidatorHarness validator;
 
     function setUp() public {
-        validator = new NitroValidatorHarness(ICertManager(address(new StubCertManager())), new P384Verifier());
+        validator = new NitroValidatorHarness(ICertManager(address(new StubCertManager())), new StubP384Verifier());
     }
 
     // ── COSE decoder tests ────────────────────────────────────
@@ -483,6 +496,10 @@ contract NitroValidatorIndefiniteLengthTest is Test {
 
     /// @dev 9 standard attestation map entries (null optional fields).
     function _entries() internal pure returns (bytes memory) {
+        return _entries(true, hex"f6");
+    }
+
+    function _entries(bool includePublicKey, bytes memory publicKeyValue) internal pure returns (bytes memory) {
         bytes memory part1 = abi.encodePacked(
             hex"696d6f64756c655f6964", // key  "module_id"  (text, 9B)
             hex"6474657374", //           val  "test"       (text, 4B)
@@ -502,15 +519,24 @@ contract NitroValidatorIndefiniteLengthTest is Test {
             hex"68636162756e646c65", //       key  "cabundle"    (text, 8B)
             hex"814400000000" //              val  [bytes(4)]    (1-elem array)
         );
+        bytes memory publicKeyEntry;
+        if (includePublicKey) {
+            publicKeyEntry = hex"6a7075626c69635f6b6579";
+        }
         bytes memory part4 = abi.encodePacked(
-            hex"6a7075626c69635f6b6579", // key  "public_key" (text, 10B)
-            hex"f6", //                     val  null
+            publicKeyEntry, // key "public_key"
+            publicKeyValue,
             hex"69757365725f64617461", //   key  "user_data"  (text, 9B)
             hex"f6", //                     val  null
             hex"656e6f6e6365", //           key  "nonce"      (text, 5B)
             hex"f6" //                      val  null
         );
         return abi.encodePacked(part1, part2, part3, part4);
+    }
+
+    function _validationTbs(bool includePublicKey, bytes memory publicKeyValue) internal pure returns (bytes memory) {
+        bytes1 mapHeader = includePublicKey ? bytes1(0xa9) : bytes1(0xa8);
+        return _buildTbs(abi.encodePacked(mapHeader, _entries(includePublicKey, publicKeyValue)));
     }
 
     /// @dev Subset of entries: only module_id and digest.
@@ -604,6 +630,30 @@ contract NitroValidatorIndefiniteLengthTest is Test {
     function test_synth_indefiniteLengthMap_reorderedKeys() public view {
         bytes memory tbs = _buildTbs(abi.encodePacked(CBOR_MAP_INDEFINITE, _reorderedEntries(), CBOR_BREAK));
         _assertSyntheticFields(validator.parseAttestation(tbs));
+    }
+
+    function test_publicKey_omitted_isAccepted() public {
+        NitroValidator.Ptrs memory p = validator.validateWithHints(_validationTbs(false, ""));
+
+        assertEq(CborElement.unwrap(p.publicKey), 0, "omitted public_key remains zero-valued");
+    }
+
+    function test_publicKey_explicitNull_isAccepted() public {
+        NitroValidator.Ptrs memory p = validator.validateWithHints(_validationTbs(true, hex"f6"));
+
+        assertTrue(p.publicKey.isNull(), "explicit null public_key");
+    }
+
+    function test_publicKey_explicitEmptyBytes_reverts() public {
+        vm.expectRevert("invalid pub key");
+        validator.validateWithHints(_validationTbs(true, hex"40"));
+    }
+
+    function test_publicKey_presentValidKey_isAccepted() public {
+        bytes memory publicKey = abi.encodePacked(hex"5841", new bytes(65));
+        NitroValidator.Ptrs memory p = validator.validateWithHints(_validationTbs(true, publicKey));
+
+        assertEq(p.publicKey.length(), 65, "valid public_key length");
     }
 
     // ══════════════════════════════════════════════════════════
