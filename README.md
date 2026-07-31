@@ -42,6 +42,16 @@ Deploy in this order (the verifier references are immutable):
 Use hardened multisig or other production-controlled addresses for `initialOwner` and
 `initialRevoker`; do not use a temporary deployer key for either role.
 
+### Contract size contingency
+
+`CertManager` is close to the EIP-170 runtime size limit. If more functionality must be added before
+Glamsterdam / EIP-7954 raises the limit to 64 KB, the least disruptive split is to move revocation
+state and admin controls into a small `CertRevocationRegistry` contract. That registry would own
+`owner`, `revoker`, `revoked`, `transferOwnership`, `setRevoker`, `revokeCert(s)`, and
+`unrevokeCert`; `CertManager` would keep certificate parsing, verification, caching, and
+`computeCertId`, and would query the registry for revocation checks. This preserves the core
+certificate-verification path while carving out the most separable module.
+
 ### Verification flow
 
 Verification has two phases. Certificate chains are reused across many attestations from the same
