@@ -122,6 +122,18 @@ contract CertManagerTest is Test {
         assertEq(int256(certManagerHarness.verifyBasicConstraints(hex"30060101ff020100", true)), 0);
     }
 
+    function test_BasicConstraintsAcceptsMaxInt64PathLen() public view {
+        assertEq(
+            int256(certManagerHarness.verifyBasicConstraints(hex"300d0101ff02087fffffffffffffff", true)),
+            int256(type(int64).max)
+        );
+    }
+
+    function test_BasicConstraintsRejectsPathLenAboveInt64Max() public {
+        vm.expectRevert(CertManager.InvalidBasicConstraints.selector);
+        certManagerHarness.verifyBasicConstraints(hex"300e0101ff0209008000000000000000", true);
+    }
+
     function test_BasicConstraintsRejectsEmptyPathLen() public {
         vm.expectRevert(CertManager.InvalidBasicConstraints.selector);
         certManagerHarness.verifyBasicConstraints(hex"30050101ff0200", true);
