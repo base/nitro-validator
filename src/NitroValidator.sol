@@ -160,7 +160,7 @@ contract NitroValidator {
             cabundle[i] = attestationTbs.slice(ptrs.cabundle[i]);
         }
 
-        ICertManager.VerifiedCert memory leafCert = verifyCachedCertBundle(cert, cabundle);
+        ICertManager.VerifiedCert memory leafCert = _verifyCachedCertBundle(cert, cabundle);
         bytes memory hash = Sha2Ext.sha384(attestationTbs, 0, attestationTbs.length);
         require(
             p384Verifier.verifyP384SignatureWithHints(hash, signature, leafCert.pubKey, attestationSigHints),
@@ -175,7 +175,7 @@ contract NitroValidator {
     ///      record without re-checking the signature (and so needs no hints). If a cert is NOT
     ///      cached, signature verification is attempted against an empty hint stream and reverts
     ///      with "inverse hint underflow". Callers must therefore pre-cache the whole bundle first.
-    function verifyCachedCertBundle(bytes memory certificate, bytes[] memory cabundle)
+    function _verifyCachedCertBundle(bytes memory certificate, bytes[] memory cabundle)
         internal
         returns (ICertManager.VerifiedCert memory)
     {
