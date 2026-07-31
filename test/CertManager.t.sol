@@ -7,6 +7,7 @@ import {ICertManager} from "../src/ICertManager.sol";
 import {Asn1Decode, LibAsn1Ptr, Asn1Ptr} from "../src/Asn1Decode.sol";
 import {LibBytes} from "../src/LibBytes.sol";
 import {P384Verifier} from "../src/P384Verifier.sol";
+import {IP384Verifier} from "../src/IP384Verifier.sol";
 import {P384HintCollector} from "./helpers/HintedNitroTestHelpers.sol";
 
 contract Asn1DecodeHarness {
@@ -49,6 +50,19 @@ contract CertManagerExtensionsHarness is CertManager {
 
     function verifyExtensions(bytes memory der, bool ca) external pure returns (int64) {
         return _verifyExtensions(der, der.root(), ca);
+    }
+}
+
+contract RevertingP384Verifier is IP384Verifier {
+    error SignatureVerificationCalled();
+
+    function verifyP384SignatureWithHints(bytes memory, bytes memory, bytes memory, bytes memory)
+        external
+        pure
+        override
+        returns (bool)
+    {
+        revert SignatureVerificationCalled();
     }
 }
 
@@ -170,6 +184,15 @@ contract CertManagerTest is Test {
         CertManager cm = new CertManager(new P384Verifier(), address(this), address(this));
 
         bytes memory mutated = _appendTbsTrailingField(CB1);
+
+        vm.expectRevert(Asn1Decode.InvalidAsn1Length.selector);
+        cm.verifyCACertWithHints(mutated, keccak256(CB0), "");
+    }
+
+    function test_ParseTbsRejectsTrailingVersionWrapperFieldBeforeSignatureVerification() public {
+        vm.warp(1775145600);
+        CertManager cm = new CertManager(new RevertingP384Verifier());
+        bytes memory mutated = _appendVersionTrailingField(CB1);
 
         vm.expectRevert(Asn1Decode.InvalidAsn1Length.selector);
         cm.verifyCACertWithHints(mutated, keccak256(CB0), "");
@@ -426,6 +449,19 @@ contract CertManagerTest is Test {
 
         _writeDerLength(result, root, _addDelta(root.length(), delta));
         _writeDerLength(result, tbsPtr, _addDelta(tbsPtr.length(), delta));
+    }
+
+    function _appendVersionTrailingField(bytes memory certificate) internal pure returns (bytes memory result) {
+        Asn1Ptr root = certificate.root();
+        Asn1Ptr tbsPtr = certificate.firstChildOf(root);
+        Asn1Ptr versionPtr = certificate.firstChildOf(tbsPtr);
+        bytes memory nullField = hex"0500";
+        int256 delta = int256(nullField.length);
+        result = _insertBytes(certificate, versionPtr.content() + versionPtr.length(), nullField);
+
+        _writeDerLength(result, root, _addDelta(root.length(), delta));
+        _writeDerLength(result, tbsPtr, _addDelta(tbsPtr.length(), delta));
+        _writeDerLength(result, versionPtr, _addDelta(versionPtr.length(), delta));
     }
 
     function _appendSignatureTrailingField(bytes memory certificate) internal pure returns (bytes memory result) {

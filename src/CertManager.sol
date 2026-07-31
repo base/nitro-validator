@@ -370,7 +370,11 @@ contract CertManager is ICertManager {
             sigAlgoPtr = certificate.nextSiblingOf(certificate.nextSiblingOf(versionPtr));
 
             // as extensions are used in cert, version should be 3 (value 2) as per https://datatracker.ietf.org/doc/html/rfc5280#section-4.1.2.1
-            if (certificate.uintAt(certificate.firstChildOf(versionPtr)) != 2) revert InvalidCertVersion();
+            Asn1Ptr versionValuePtr = certificate.firstChildOf(versionPtr);
+            if (versionValuePtr.content() + versionValuePtr.length() != versionPtr.content() + versionPtr.length()) {
+                revert Asn1Decode.InvalidAsn1Length();
+            }
+            if (certificate.uintAt(versionValuePtr) != 2) revert InvalidCertVersion();
         }
         _requireAsn1Tag(certificate, sigAlgoPtr, 0x30);
 
