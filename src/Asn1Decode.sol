@@ -114,6 +114,7 @@ library Asn1Decode {
      */
     function bitstring(bytes memory der, Asn1Ptr ptr) internal pure returns (Asn1Ptr) {
         if (der[ptr.header()] != 0x03) revert InvalidAsn1Type();
+        if (ptr.length() == 0) revert InvalidAsn1Length();
         // Only 00 padded bitstr can be converted to bytestr!
         if (der[ptr.content()] != 0x00) revert InvalidAsn1Value();
         return LibAsn1Ptr.toAsn1Ptr(ptr.header(), ptr.content() + 1, ptr.length() - 1);

@@ -186,6 +186,11 @@ contract Asn1DecodeTest is Test {
         h.bitstringContent(hex"0401ff");
     }
 
+    function test_bitstring_empty_reverts() public {
+        vm.expectRevert(Asn1Decode.InvalidAsn1Length.selector);
+        h.bitstringContent(hex"0300");
+    }
+
     function test_bitstring_nonZeroPadded_reverts() public {
         vm.expectRevert(Asn1Decode.InvalidAsn1Value.selector);
         h.bitstringContent(hex"03020100"); // pad byte is 0x01, not 0x00
