@@ -160,10 +160,10 @@ contract NitroValidator {
             cabundle[i] = attestationTbs.slice(ptrs.cabundle[i]);
         }
 
-        ICertManager.VerifiedCert memory parent = verifyCachedCertBundle(cert, cabundle);
+        ICertManager.VerifiedCert memory leafCert = verifyCachedCertBundle(cert, cabundle);
         bytes memory hash = Sha2Ext.sha384(attestationTbs, 0, attestationTbs.length);
         require(
-            p384Verifier.verifyP384SignatureWithHints(hash, signature, parent.pubKey, attestationSigHints),
+            p384Verifier.verifyP384SignatureWithHints(hash, signature, leafCert.pubKey, attestationSigHints),
             "invalid sig"
         );
 
