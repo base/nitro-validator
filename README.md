@@ -107,10 +107,11 @@ pragma solidity ^0.8.0;
 
 import {NitroValidator} from "@nitro-validator/NitroValidator.sol";
 import {CertManager} from "@nitro-validator/CertManager.sol";
-import {CborDecode} from "@nitro-validator/CborDecode.sol";
+import {CborDecode, CborElement, LibCborElement} from "@nitro-validator/CborDecode.sol";
 
 contract Validator {
     using CborDecode for bytes;
+    using LibCborElement for CborElement;
 
     uint256 public constant MAX_AGE = 60 minutes;
     bytes32 public constant PCR0 = keccak256("some PCR0 value");
@@ -131,6 +132,8 @@ contract Validator {
         NitroValidator.Ptrs memory ptrs =
             validator.validateAttestationWithHints(attestationTbs, signature, attestationHints);
 
+        // `pcrs` is always a 32-slot bank. Sparse AWS maps leave omitted slots as CBOR null.
+        require(!ptrs.pcrs[0].isNull(), "missing pcr0");
         bytes32 pcr0 = attestationTbs.keccak(ptrs.pcrs[0]);
         require(pcr0 == PCR0, "invalid pcr0 in attestation");
         require(ptrs.timestamp / 1000 + MAX_AGE > block.timestamp, "attestation too old");
@@ -172,8 +175,10 @@ integrator (see [docs](docs/hinted-p384-nitro-attestation.md#integrator-responsi
   integrators must still never use attestation signatures as uniqueness keys; dedupe on canonical
   attestation fields instead.
 - **Enclave policy** — checking `pcrs` / `moduleID` against the enclave image(s) you trust is your
-  responsibility. AWS debug-mode and attach-console attestations contain all-zero PCR values and
-  must not be trusted for production cryptographic attestation.
+  responsibility. `ptrs.pcrs` is a 32-slot bank indexed by PCR number; omitted AWS PCR entries
+  are explicit CBOR-null pointers, so consumers must check `isNull()` before reading or hashing a
+  slot. AWS debug-mode and attach-console attestations contain all-zero PCR values and must not be
+  trusted for production cryptographic attestation.
 - **Revocation operations** — the contract enforces the on-chain revoked set, but an off-chain
   operator must monitor AWS CRLs and submit the affected certificate identity keys
   (`keccak256(issuerHash, serialHash)`, computed via `computeCertId` or directly from the CRL's
