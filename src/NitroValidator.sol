@@ -74,17 +74,20 @@ contract NitroValidator {
         }
 
         CborElement protectedPtr = attestation.byteStringAt(offset);
-        CborElement unprotectedPtr = attestation.nextMap(protectedPtr);
-        CborElement payloadPtr = attestation.nextByteString(unprotectedPtr);
+        // Map pointers end at their header; validate the type, then skip the full item.
+        attestation.nextMap(protectedPtr);
+        uint256 unprotectedEnd = attestation.skipValue(protectedPtr.end());
+        CborElement payloadPtr = attestation.byteStringAt(unprotectedEnd);
         CborElement signaturePtr = attestation.nextByteString(payloadPtr);
 
         uint256 rawProtectedLength = protectedPtr.end() - offset;
-        uint256 rawPayloadLength = payloadPtr.end() - unprotectedPtr.end();
+        uint256 rawPayloadLength = payloadPtr.end() - unprotectedEnd;
         bytes memory rawProtectedBytes = attestation.slice(offset, rawProtectedLength);
-        bytes memory rawPayloadBytes = attestation.slice(unprotectedPtr.end(), rawPayloadLength);
+        bytes memory rawPayloadBytes = attestation.slice(unprotectedEnd, rawPayloadLength);
         attestationTbs =
             _constructAttestationTbs(rawProtectedBytes, rawProtectedLength, rawPayloadBytes, rawPayloadLength);
         signature = attestation.slice(signaturePtr.start(), signaturePtr.length());
+        require(signaturePtr.end() == attestation.length, "trailing COSE data");
     }
 
     /// @notice DEPRECATED — always reverts. The fully on-chain (non-hinted) path is too expensive
