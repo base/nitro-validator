@@ -101,6 +101,25 @@ contains a revoked certificate.
 - `loadVerified` is a raw cache read by verification cache key; returned metadata does not imply
   the certificate is currently trusted.
 
+### Production admin controls
+
+`owner` and `revoker` are production security roles for the shared certificate cache and must be
+operated as hardened admin keys.
+
+- Hold both roles in production-controlled multisigs, not temporary deployer EOAs. If deploying a
+  version with `initialOwner` / `initialRevoker` constructor arguments, pass those multisigs at
+  deployment; otherwise rotate both roles before accepting verification traffic.
+- Treat owner actions as high-risk because ownership transfer, revoker rotation, `unrevokeCert`,
+  and root revocation/unrevocation can affect all consumers. Use a timelock or equivalent
+  change-management process where operationally feasible.
+- Monitor and alert on `OwnershipTransferred`, `RevokerUpdated`, `CertRevoked`, and
+  `CertUnrevoked`, with high-severity alerts for root revocation/unrevocation, unexpected role
+  changes, and unusual revocation batches.
+- Maintain a key-rotation and incident-response runbook covering compromised owner, compromised
+  revoker, lost keys, accidental revocation/unrevocation, and AWS CRL-driven revocation events.
+- A two-step ownership transfer or timelocked admin contract is intentionally left to a separate
+  admin-model change because it alters the operational flow and adds bytecode.
+
 ### Example consumer
 
 ```solidity
