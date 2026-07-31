@@ -308,6 +308,11 @@ library Asn1Decode {
         require(year >= 1970);
         require(1 <= month && month <= 12);
         require(1 <= day && day <= 31);
+        if (month == 2) {
+            require(day <= 28 || (day == 29 && (year % 4 == 0 && (year % 100 != 0 || year % 400 == 0))));
+        } else if (month == 4 || month == 6 || month == 9 || month == 11) {
+            require(day <= 30);
+        }
         require(hour <= 23);
         require(minute <= 59);
         require(second <= 59);

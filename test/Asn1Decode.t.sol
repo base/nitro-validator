@@ -152,6 +152,26 @@ contract Asn1DecodeTest is Test {
         assertEq(h.timestampAtRoot(_generalizedTime("20240101000000Z")), 1704067200);
     }
 
+    function test_timestamp_february30_reverts() public {
+        vm.expectRevert();
+        h.timestampAtRoot(_generalizedTime("20240230000000Z"));
+    }
+
+    function test_timestamp_april31_reverts() public {
+        vm.expectRevert();
+        h.timestampAtRoot(_generalizedTime("20240431000000Z"));
+    }
+
+    function test_timestamp_nonLeapYearFebruary29_reverts() public {
+        vm.expectRevert();
+        h.timestampAtRoot(_generalizedTime("20230229000000Z"));
+    }
+
+    function test_timestamp_leapYearFebruary29() public view {
+        // GeneralizedTime "20240229000000Z" -> 2024-02-29T00:00:00Z
+        assertEq(h.timestampAtRoot(_generalizedTime("20240229000000Z")), 1709164800);
+    }
+
     function test_timestamp_wrongType_reverts() public {
         bytes memory der = abi.encodePacked(hex"160d", bytes("700101000000Z")); // type 0x16
         vm.expectRevert(Asn1Decode.InvalidAsn1Value.selector);
