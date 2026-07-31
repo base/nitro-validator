@@ -113,6 +113,8 @@ contract NitroValidator {
     ///      - PCR / moduleID policy: the caller must check `ptrs.pcrs` / `ptrs.moduleID` against the
     ///        enclave image(s) they trust. `ptrs.pcrs` is a 32-slot bank indexed by PCR number;
     ///        omitted slots are CBOR-null sentinels and must be checked with `isNull()` before use.
+    ///        AWS debug-mode and attach-console attestations have all-zero PCR values and must not
+    ///        be trusted for production cryptographic attestation.
     /// @param attestationTbs The COSE Sign1 to-be-signed bytes (from `decodeAttestationTbs`).
     /// @param signature The 96-byte (r||s) P-384 attestation signature.
     /// @param attestationSigHints Off-chain inverse hints for the attestation signature; re-verified

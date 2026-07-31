@@ -177,7 +177,8 @@ integrator (see [docs](docs/hinted-p384-nitro-attestation.md#integrator-responsi
 - **Enclave policy** — checking `pcrs` / `moduleID` against the enclave image(s) you trust is your
   responsibility. `ptrs.pcrs` is a 32-slot bank indexed by PCR number; omitted AWS PCR entries
   are explicit CBOR-null pointers, so consumers must check `isNull()` before reading or hashing a
-  slot.
+  slot. AWS debug-mode and attach-console attestations contain all-zero PCR values and must not be
+  trusted for production cryptographic attestation.
 - **Revocation operations** — the contract enforces the on-chain revoked set, but an off-chain
   operator must monitor AWS CRLs and submit the affected certificate identity keys
   (`keccak256(issuerHash, serialHash)`, computed via `computeCertId` or directly from the CRL's
