@@ -118,25 +118,17 @@ contract CertManager is ICertManager {
         emit RevokerUpdated(address(0), msg.sender);
     }
 
-    /// @notice DEPRECATED — always reverts. The fully on-chain (non-hinted) path is too expensive
-    ///         post-Fusaka and has been removed. Use {verifyCACertWithHints}.
+    /// @inheritdoc ICertManager
     function verifyCACert(bytes memory, bytes32) external pure returns (bytes32) {
         revert DeprecatedEntrypoint();
     }
 
-    /// @notice DEPRECATED — always reverts. Use {verifyClientCertWithHints}.
+    /// @inheritdoc ICertManager
     function verifyClientCert(bytes memory, bytes32) external pure returns (VerifiedCert memory) {
         revert DeprecatedEntrypoint();
     }
 
-    /// @notice Verify a CA certificate against its (already-cached) parent and cache the result.
-    /// @dev Idempotent with a cache short-circuit: if `cert` is already verified and unexpired, the
-    ///      cached record is returned and `signatureHints` is ignored, but `parentCertHash` must
-    ///      match the parent used during cold verification. On a cold cert, `signatureHints` must
-    ///      contain the real off-chain inverse hints for the cert signature; they are re-verified
-    ///      on-chain, so a wrong hint only reverts. Pass 0 only when submitting the pinned root;
-    ///      otherwise pass the cached parent cert hash. The returned hash is ROOT_CA_CERT_HASH for
-    ///      the pinned root and keccak256(tbsCertificate) for every non-root cert.
+    /// @inheritdoc ICertManager
     function verifyCACertWithHints(bytes memory cert, bytes32 parentCertHash, bytes memory signatureHints)
         external
         returns (bytes32)
@@ -146,10 +138,7 @@ contract CertManager is ICertManager {
         return certHash;
     }
 
-    /// @notice Verify a leaf (client) certificate against its (already-cached) parent and cache it.
-    /// @dev Same cache short-circuit and hint semantics as {verifyCACertWithHints}: on a cold cert
-    ///      `signatureHints` must hold the real off-chain inverse hints (re-verified on-chain); on a
-    ///      cached cert they are ignored, but `parentCertHash` must match the cold verification parent.
+    /// @inheritdoc ICertManager
     function verifyClientCertWithHints(bytes memory cert, bytes32 parentCertHash, bytes memory signatureHints)
         external
         returns (VerifiedCert memory)
@@ -157,25 +146,17 @@ contract CertManager is ICertManager {
         return _verifyCert(cert, _certCacheKey(cert), false, parentCertHash, signatureHints);
     }
 
-    /// @notice Return raw cached certificate metadata without current trust checks.
-    /// @dev A non-empty return value only means the cert was cached previously. It may now be
-    ///      expired or revoked; use the verification entrypoints for trust-aware reuse. Pass the
-    ///      cache key returned by the verification entrypoints.
+    /// @inheritdoc ICertManager
     function loadVerified(bytes32 certHash) external view returns (VerifiedCert memory) {
         return _loadVerified(certHash);
     }
 
+    /// @inheritdoc ICertManager
     function isRevoked(bytes32 certId) external view returns (bool) {
         return revoked[certId];
     }
 
-    /// @notice Compute the revocation identity key for a certificate.
-    /// @dev Returns `keccak256(issuerHash, serialHash)` — the (issuer DN, serial number) pair that
-    ///      uniquely identifies an X.509 certificate and that AWS CRLs use to list revoked certs.
-    ///      This key is invariant to ECDSA signature malleability (the `(r, n-s)` twin) and to DER
-    ///      re-encoding, unlike `keccak256(cert)`. Operators pass the result to {revokeCert} /
-    ///      {revokeCerts}; the same value is recorded on-chain when the cert is first verified, so a
-    ///      revocation applies to every byte-encoding of that certificate. Reverts on malformed DER.
+    /// @inheritdoc ICertManager
     function computeCertId(bytes memory cert) external pure returns (bytes32) {
         Asn1Ptr root = cert.root();
         _requireAsn1Tag(cert, root, 0x30);
@@ -184,25 +165,27 @@ contract CertManager is ICertManager {
         return _certIdentity(cert, tbsCertPtr);
     }
 
+    /// @inheritdoc ICertManager
     function transferOwnership(address newOwner) external onlyOwner {
         if (newOwner == address(0)) revert InvalidOwner();
         emit OwnershipTransferred(owner, newOwner);
         owner = newOwner;
     }
 
+    /// @inheritdoc ICertManager
     function setRevoker(address newRevoker) external onlyOwner {
         if (newRevoker == address(0)) revert InvalidRevoker();
         emit RevokerUpdated(revoker, newRevoker);
         revoker = newRevoker;
     }
 
-    /// @notice Revoke a certificate by its identity key (see {computeCertId}); use ROOT_CA_CERT_HASH
-    ///         to trigger the owner-only emergency global halt.
+    /// @inheritdoc ICertManager
     function revokeCert(bytes32 certId) external {
         _requireCanRevoke(certId);
         _revokeCert(certId);
     }
 
+    /// @inheritdoc ICertManager
     function revokeCerts(bytes32[] calldata certIds) external {
         for (uint256 i = 0; i < certIds.length; ++i) {
             _requireCanRevoke(certIds[i]);
@@ -210,6 +193,7 @@ contract CertManager is ICertManager {
         }
     }
 
+    /// @inheritdoc ICertManager
     function unrevokeCert(bytes32 certId) external onlyOwner {
         revoked[certId] = false;
         emit CertUnrevoked(certId, msg.sender);
