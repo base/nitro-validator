@@ -50,8 +50,8 @@ yet a general-availability release.
 ### Changed (breaking)
 - Verification is now hinted. Use `CertManager.verifyCACertWithHints` /
   `verifyClientCertWithHints` and `NitroValidator.validateAttestationWithHints`.
-- Constructors now take an `IP384Verifier`: deploy `P384Verifier` → `CertManager(p384Verifier)` →
-  `NitroValidator(certManager, p384Verifier)`.
+- Constructors now take an `IP384Verifier` and initial CertManager roles: deploy `P384Verifier` →
+  `CertManager(p384Verifier, initialOwner, initialRevoker)` → `NitroValidator(certManager, p384Verifier)`.
 - `validateAttestationWithHints` requires the certificate bundle to be verified/cached first; an
   uncached bundle reverts with `"inverse hint underflow"`.
 

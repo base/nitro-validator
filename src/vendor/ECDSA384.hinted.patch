@@ -2,7 +2,7 @@ diff --git a/contracts/libs/crypto/ECDSA384.sol b/contracts/libs/crypto/ECDSA384
 index 9e43756..053803b 100644
 --- a/contracts/libs/crypto/ECDSA384.sol
 +++ b/contracts/libs/crypto/ECDSA384.sol
-@@ -64,6 +64,40 @@ library ECDSA384 {
+@@ -64,6 +64,28 @@ library ECDSA384 {
          bytes memory signature_,
          bytes memory pubKey_
      ) internal view returns (bool) {
@@ -20,16 +20,6 @@ index 9e43756..053803b 100644
 +        uint256 consumed_;
 +        (ok_, consumed_) = _verify(curveParams_, hashedMessage_, signature_, pubKey_, inverseHints_, true);
 +        require(consumed_ == inverseHints_.length, "unused inverse hints");
-+    }
-+
-+    function verifyWithHintsConsumed(
-+        Parameters memory curveParams_,
-+        bytes memory hashedMessage_,
-+        bytes memory signature_,
-+        bytes memory pubKey_,
-+        bytes memory inverseHints_
-+    ) internal view returns (bool ok_, uint256 consumed_) {
-+        return _verify(curveParams_, hashedMessage_, signature_, pubKey_, inverseHints_, true);
 +    }
 +
 +    function _verify(
