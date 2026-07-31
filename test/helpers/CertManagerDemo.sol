@@ -7,7 +7,7 @@ import {IP384Verifier} from "../../src/IP384Verifier.sol";
 /// @notice Demo-only certificate manager with configurable certificate expiry grace.
 /// @dev This exists only to replay expired Nitro fixtures on testnets. Do not use in production or audit target deployments.
 contract CertManagerDemo is CertManager {
-    uint256 public immutable certificateExpiryGraceSeconds;
+    uint256 private immutable certificateExpiryGraceSeconds;
 
     constructor(IP384Verifier p384Verifier_, uint256 certificateExpiryGraceSeconds_) CertManager(p384Verifier_) {
         certificateExpiryGraceSeconds = certificateExpiryGraceSeconds_;
