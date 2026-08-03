@@ -8,6 +8,11 @@ AWS's attestation verification documentation disables CRL checks in its sample f
 This library supports operational revocation with an authorized revoker: operators monitor AWS CRLs
 off-chain and call `CertManager.revokeCert` / `revokeCerts` for affected certificate identity keys.
 
+## Security reviews
+
+- [Cantina Managed review — August 2026, commit `05294ec0`](audits/cantina-nitro-validator-05294ec0-2026-08-03.pdf)
+- [Cantina Managed review — January 2025](audits/report-cantinacode-1212.pdf)
+
 ## Hinted P-384 verification
 
 Nitro attestations are signed with ECDSA over the NIST P-384 curve. Verifying a P-384 signature
